@@ -1,0 +1,7 @@
+In buyer mode, when item added to cart a popup shows view cart, when clicked it didn't work.
+Filter functionality is not there.
+After placing the order when clicked on track order it didn't work.
+
+In driver mode, in profile only documents button is working.
+After rejecting the job, job still shows on dashboard.
+After completing the job, job is still there.
