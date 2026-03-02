@@ -24,8 +24,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         foregroundColor: AppColors.white,
         elevation: 0,
       ),
-      body: hasActiveDelivery
-          ? SingleChildScrollView(
+      body: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -177,46 +176,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ),
             ),
             const SizedBox(height: 32),
-          ],
-        ),
-      )
-          : Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.local_shipping_outlined,
-              size: 100,
-              color: AppColors.textHint,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'No Active Delivery',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Browse available jobs to get started',
-              style: TextStyle(
-                fontSize: 16,
-                color: AppColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 32),
-            ElevatedButton.icon(
-              onPressed: () {
-                // Navigate to available jobs
-              },
-              icon: const Icon(Icons.work),
-              label: const Text('Browse Jobs'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-              ),
-            ),
           ],
         ),
       ),
