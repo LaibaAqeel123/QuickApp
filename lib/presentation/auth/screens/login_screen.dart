@@ -110,14 +110,25 @@ class _LoginScreenState extends State<LoginScreen> {
     Map<String, dynamic> loginData,
     Map<String, dynamic>? profileData,
   ) async {
-    // Find driverId
-    String? driverId = _extractField(loginData, [
-          'driverId', 'driver_id', 'id', 'sub', 'userId',
+    // ── DEBUG ────────────────────────────────────
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║         DRIVER FLOW DEBUG            ║');
+    debugPrint('╠══════════════════════════════════════╣');
+    debugPrint('║ LOGIN DATA:');
+    loginData.forEach((k, v) => debugPrint('║   $k: $v'));
+    debugPrint('║ PROFILE DATA:');
+    profileData?.forEach((k, v) => debugPrint('║   $k: $v'));
+    debugPrint('╚══════════════════════════════════════╝');
+
+    // FIX: Use userId from profile (backend never returns a separate driverId)
+    String? driverId = _extractField(profileData ?? {}, [
+          'userId',
         ]) ??
-        _extractField(profileData ?? {}, [
-          'driverId', 'driver_id', 'id', 'sub',
-          'driver.id', 'data.driverId',
+        _extractField(loginData, [
+          'sub',
         ]);
+
+    debugPrint('║ RESOLVED DRIVER ID: $driverId');
 
     // Save driverId
     if (driverId != null) {
@@ -132,9 +143,19 @@ class _LoginScreenState extends State<LoginScreen> {
     if (driverId != null) {
       final dr = await AuthService.instance.getDriverProfile(driverId);
       if (!mounted) return;
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║     DRIVER PROFILE API RESULT        ║');
+      debugPrint('║ SUCCESS: ${dr.success}');
+      debugPrint('║ MESSAGE: ${dr.message}');
+      debugPrint('║ DATA:');
+      dr.data?.forEach((k, v) => debugPrint('║   $k: $v'));
+      debugPrint('╚══════════════════════════════════════╝');
+
       if (dr.success && dr.data != null) {
         approvalStatus = _extractField(dr.data!, [
           'status', 'approvalStatus', 'accountStatus',
+          'isApproved', 'approved',
           'data.status', 'driver.status',
         ])?.toLowerCase();
       }
@@ -143,12 +164,23 @@ class _LoginScreenState extends State<LoginScreen> {
     // Fallback to profile data
     approvalStatus ??= _extractField(profileData ?? {}, [
       'status', 'approvalStatus', 'accountStatus',
+      'isApproved', 'approved',
     ])?.toLowerCase();
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║ FINAL APPROVAL STATUS: "$approvalStatus"');
+    debugPrint('╚══════════════════════════════════════╝');
 
     if (!mounted) return;
 
+    // FIX: Added 'verified' — backend returns "Verified" for approved drivers
     final isApproved =
-        approvalStatus == 'approved' || approvalStatus == 'active';
+        approvalStatus == 'approved' ||
+        approvalStatus == 'active'   ||
+        approvalStatus == 'verified' || // ← KEY FIX
+        approvalStatus == 'true';
+
+    debugPrint('║ IS APPROVED: $isApproved');
 
     if (isApproved) {
       _navigateToDriver(driverId);
@@ -167,74 +199,77 @@ class _LoginScreenState extends State<LoginScreen> {
         insetPadding: const EdgeInsets.symmetric(horizontal: 24),
         child: Padding(
           padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.1),
-                  shape: BoxShape.circle,
+          // FIX: Wrapped in SingleChildScrollView to prevent overflow on small screens
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.hourglass_top_rounded,
+                      size: 44, color: Colors.orange),
                 ),
-                child: const Icon(Icons.hourglass_top_rounded,
-                    size: 44, color: Colors.orange),
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Pending Approval',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
+                const SizedBox(height: 20),
+                const Text(
+                  'Pending Approval',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                  textAlign: TextAlign.center,
                 ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Your driver account is currently under review.\n\nOnce our admin team approves your application, you\'ll be able to start accepting deliveries.\n\nThis usually takes 24–48 hours.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textSecondary,
-                  height: 1.6,
+                const SizedBox(height: 12),
+                const Text(
+                  'Your driver account is currently under review.\n\nOnce our admin team approves your application, you\'ll be able to start accepting deliveries.\n\nThis usually takes 24–48 hours.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                    height: 1.6,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.orange),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.circle, size: 8, color: Colors.orange),
-                    SizedBox(width: 6),
-                    Text(
-                      'Status: Pending',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.orange,
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.orange),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.circle, size: 8, color: Colors.orange),
+                      SizedBox(width: 6),
+                      Text(
+                        'Status: Pending',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.orange,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: const Text("OK, I'll Wait"),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text("OK, I'll Wait"),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -298,18 +333,22 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 32),
-                  Text(AppStrings.welcomeBack,
-                      style: const TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary,
-                      ),
-                      textAlign: TextAlign.center),
+                  Text(
+                    AppStrings.welcomeBack,
+                    style: const TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 8),
-                  Text(AppStrings.loginToContinue,
-                      style: const TextStyle(
-                          fontSize: 16, color: AppColors.textSecondary),
-                      textAlign: TextAlign.center),
+                  Text(
+                    AppStrings.loginToContinue,
+                    style: const TextStyle(
+                        fontSize: 16, color: AppColors.textSecondary),
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 48),
                   TextFormField(
                     controller: _emailController,
@@ -346,11 +385,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       onPressed: () {
                         // TODO: forgot password
                       },
-                      child: const Text(AppStrings.forgotPassword,
-                          style: TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w600,
-                          )),
+                      child: const Text(
+                        AppStrings.forgotPassword,
+                        style: TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 24),
@@ -371,19 +412,22 @@ class _LoginScreenState extends State<LoginScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text(AppStrings.dontHaveAccount,
-                          style:
-                              TextStyle(color: AppColors.textSecondary)),
+                      const Text(
+                        AppStrings.dontHaveAccount,
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
                       TextButton(
                         onPressed: () => Navigator.of(context).push(
                           MaterialPageRoute(
                               builder: (_) => const SignupScreen()),
                         ),
-                        child: const Text(AppStrings.signUp,
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w600,
-                            )),
+                        child: const Text(
+                          AppStrings.signUp,
+                          style: TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ],
                   ),
