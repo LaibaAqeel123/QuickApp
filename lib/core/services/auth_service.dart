@@ -3,13 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ─────────────────────────────────────────────────────────
-//  API constants
-// ─────────────────────────────────────────────────────────
 class ApiConstants {
   static const String baseUrl = 'https://api.neptasolutions.co.uk';
 
-  // Auth
   static const String register           = '$baseUrl/api/auth/register';
   static const String login              = '$baseUrl/api/auth/login';
   static const String logout             = '$baseUrl/api/auth/logout';
@@ -18,7 +14,6 @@ class ApiConstants {
   static const String verifyEmail        = '$baseUrl/api/auth/verify-email';
   static const String resendVerification = '$baseUrl/api/auth/resend-verification';
 
-  // Driver
   static String driverById(String id)      => '$baseUrl/api/Drivers/$id';
   static String driverToggle(String id)    => '$baseUrl/api/Drivers/$id/toggle-availability';
   static String driverStatus(String id)    => '$baseUrl/api/Drivers/$id/status';
@@ -38,7 +33,6 @@ class AuthResult {
   final bool success;
   final String? message;
   final Map<String, dynamic>? data;
-
   const AuthResult({required this.success, this.message, this.data});
 }
 
@@ -129,16 +123,12 @@ class AuthService {
 
   Future<String?> getAccessToken()  async =>
       (await SharedPreferences.getInstance()).getString(_PrefKeys.accessToken);
-
   Future<String?> getRefreshToken() async =>
       (await SharedPreferences.getInstance()).getString(_PrefKeys.refreshToken);
-
   Future<String?> getSavedRole()    async =>
       (await SharedPreferences.getInstance()).getString(_PrefKeys.userRole);
-
   Future<String?> getSavedUserId()  async =>
       (await SharedPreferences.getInstance()).getString(_PrefKeys.userId);
-
   Future<String?> getSavedDriverId() async =>
       (await SharedPreferences.getInstance()).getString(_PrefKeys.driverId);
 
@@ -157,13 +147,6 @@ class AuthService {
   }
 
   // ── Register ───────────────────────────────────────────
-  // API contract: email, password, firstName, lastName, phoneNumber,
-  //               userType, businessName, licenseNumber, licensePlate
-  //
-  // CHANGES from previous version:
-  //  • Removed licenseExpiryDate — not part of the API contract
-  //  • Added businessName — always sent (empty string for non-suppliers)
-  //  • licenseNumber and licensePlate always sent (empty string for non-drivers)
   Future<AuthResult> register({
     required String firstName,
     required String lastName,
@@ -176,8 +159,6 @@ class AuthService {
     String? licensePlate,
   }) async {
     try {
-      // Always send every field the API expects — empty string if not applicable.
-      // Sending unknown fields (like licenseExpiryDate) caused silent 500 crashes.
       final Map<String, dynamic> body = {
         'email':         email,
         'password':      password,
@@ -194,33 +175,28 @@ class AuthService {
 
       debugPrint('\n╔══════════════════════════════════════╗');
       debugPrint('║         REGISTER REQUEST             ║');
-      debugPrint('╠══════════════════════════════════════╣');
       debugPrint('║ URL : ${ApiConstants.register}');
       debugPrint('║ JSON: $jsonString');
       debugPrint('╚══════════════════════════════════════╝');
 
       final response = await http
-          .post(
-            Uri.parse(ApiConstants.register),
-            headers: _jsonHeaders,
-            body: jsonString,
-          )
+          .post(Uri.parse(ApiConstants.register),
+              headers: _jsonHeaders, body: jsonString)
           .timeout(const Duration(seconds: 60));
 
       debugPrint('\n╔══════════════════════════════════════╗');
       debugPrint('║         REGISTER RESPONSE            ║');
       debugPrint('║ STATUS : ${response.statusCode}');
-      debugPrint('║ HEADERS: ${response.headers}');
       debugPrint('║ BODY   : "${response.body}"');
       debugPrint('╚══════════════════════════════════════╝');
 
       final resBody = _safeJsonDecode(response.body);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final token        = _extract(resBody, ['token', 'access_token', 'accessToken', 'data.token', 'data.accessToken']);
-        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token', 'data.refreshToken']);
-        final role         = _extract(resBody, ['role', 'userType', 'data.role']);
-        final userId       = _extract(resBody, ['id', 'userId', 'sub', 'data.id']);
+        final token        = _extract(resBody, ['token', 'access_token', 'accessToken']);
+        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token']);
+        final role         = _extract(resBody, ['role', 'userType']);
+        final userId       = _extract(resBody, ['id', 'userId', 'sub']);
 
         if (token != null) {
           await saveTokens(
@@ -235,20 +211,81 @@ class AuthService {
 
       if (response.statusCode == 500) {
         final serverMsg = _extract(resBody, ['message', 'error', 'detail', 'title']);
-        final hint = serverMsg ??
-            'Possible causes:\n'
-            '• Email already registered\n'
-            '• Phone number already in use\n'
-            '• License plate / number already registered';
-        return AuthResult(success: false, message: 'Server error (500).\n$hint');
+        return AuthResult(
+          success: false,
+          message: serverMsg ?? 'Server error (500). Please try again.',
+        );
       }
 
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
+    } on Exception catch (e) {
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ── Upload Driver Document ─────────────────────────────
+  // POST /api/Drivers/{driverId}/upload-document
+  // Uses multipart/form-data — cannot use regular http.post
+  Future<AuthResult> uploadDriverDocument({
+    required String driverId,
+    required String documentType,  // e.g. "DrivingLicense"
+    required List<int> fileBytes,
+    required String fileName,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType',
+      );
+
+      final request = http.MultipartRequest('POST', uri);
+
+      // Auth header — no Content-Type here, MultipartRequest sets it automatically
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+
+      // Attach file
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          fileBytes,
+          filename: fileName,
+        ),
+      );
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║      UPLOAD DOCUMENT REQUEST         ║');
+      debugPrint('║ URL         : $uri');
+      debugPrint('║ driverId    : $driverId');
+      debugPrint('║ documentType: $documentType');
+      debugPrint('║ fileName    : $fileName');
+      debugPrint('║ fileSize    : ${fileBytes.length} bytes');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      final streamed = await request.send()
+          .timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║      UPLOAD DOCUMENT RESPONSE        ║');
+      debugPrint('║ STATUS: ${response.statusCode}');
+      debugPrint('║ BODY  : "${response.body}"');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return const AuthResult(success: true);
+      }
+
+      final resBody = _safeJsonDecode(response.body);
       return AuthResult(
         success: false,
         message: _errorMessage(resBody, response.statusCode),
       );
     } on Exception catch (e) {
-      debugPrint('║ REGISTER EXCEPTION: $e');
+      debugPrint('║ UPLOAD EXCEPTION: $e');
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
@@ -265,11 +302,9 @@ class AuthService {
       debugPrint('╚══════════════════════════════════════╝');
 
       final response = await http
-          .post(
-            Uri.parse(ApiConstants.login),
-            headers: _jsonHeaders,
-            body: jsonEncode({'email': email, 'password': password}),
-          )
+          .post(Uri.parse(ApiConstants.login),
+              headers: _jsonHeaders,
+              body: jsonEncode({'email': email, 'password': password}))
           .timeout(const Duration(seconds: 30));
 
       debugPrint('\n╔══════════════════════════════════════╗');
@@ -281,8 +316,8 @@ class AuthService {
       final resBody = _safeJsonDecode(response.body);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final token        = _extract(resBody, ['token', 'access_token', 'accessToken', 'data.token', 'data.accessToken']);
-        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token', 'data.refreshToken']);
+        final token        = _extract(resBody, ['token', 'access_token', 'accessToken', 'data.token']);
+        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token']);
         final role         = _extract(resBody, ['role', 'userType', 'user.role', 'data.role']);
         final userId       = _extract(resBody, ['id', 'userId', 'user.id', 'sub']);
 
@@ -299,14 +334,14 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      debugPrint('║ LOGIN EXCEPTION: $e');
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  // ── Get Profile (/api/auth/me) ─────────────────────────
+  // ── Get Profile ────────────────────────────────────────
   Future<AuthResult> getProfile() async {
     try {
       final response = await http
@@ -322,14 +357,15 @@ class AuthService {
       final resBody = _safeJsonDecode(response.body);
 
       if (response.statusCode == 200) {
-        final role = _extract(resBody, ['role', 'userType', 'user.role', 'data.role']);
+        final role = _extract(resBody, ['role', 'userType', 'user.role']);
         if (role != null) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_PrefKeys.userRole, role.toLowerCase());
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -339,17 +375,16 @@ class AuthService {
   Future<AuthResult> resendVerification() async {
     try {
       final response = await http
-          .post(Uri.parse(ApiConstants.resendVerification), headers: await _authHeaders)
+          .post(Uri.parse(ApiConstants.resendVerification),
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-
-      debugPrint('║ RESEND STATUS: ${response.statusCode}');
-      debugPrint('║ RESEND BODY  : ${response.body.isEmpty ? "(EMPTY)" : response.body}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
       }
       final resBody = _safeJsonDecode(response.body);
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -360,11 +395,9 @@ class AuthService {
     try {
       final refreshToken = await getRefreshToken();
       await http
-          .post(
-            Uri.parse(ApiConstants.logout),
-            headers: await _authHeaders,
-            body: jsonEncode({'refreshToken': refreshToken ?? ''}),
-          )
+          .post(Uri.parse(ApiConstants.logout),
+              headers: await _authHeaders,
+              body: jsonEncode({'refreshToken': refreshToken ?? ''}))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
     } finally {
@@ -376,7 +409,8 @@ class AuthService {
   Future<AuthResult> getDriverProfile(String driverId) async {
     try {
       final response = await http
-          .get(Uri.parse(ApiConstants.driverById(driverId)), headers: await _authHeaders)
+          .get(Uri.parse(ApiConstants.driverById(driverId)),
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
 
       debugPrint('\n╔══════════════════════════════════════╗');
@@ -395,7 +429,8 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -405,21 +440,16 @@ class AuthService {
   Future<AuthResult> toggleDriverAvailability(String driverId) async {
     try {
       final response = await http
-          .patch(Uri.parse(ApiConstants.driverToggle(driverId)), headers: await _authHeaders)
+          .patch(Uri.parse(ApiConstants.driverToggle(driverId)),
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
 
-      debugPrint('\n╔══════════════════════════════════════╗');
-      debugPrint('║      TOGGLE AVAILABILITY RESPONSE    ║');
-      debugPrint('║ STATUS: ${response.statusCode}');
-      debugPrint('║ BODY  : ${response.body.isEmpty ? "(EMPTY)" : response.body}');
-      debugPrint('╚══════════════════════════════════════╝');
-
       final resBody = _safeJsonDecode(response.body);
-
       if (response.statusCode == 200 || response.statusCode == 204) {
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -446,19 +476,16 @@ class AuthService {
       };
 
       final response = await http
-          .post(
-            Uri.parse(ApiConstants.driverLocation(driverId)),
-            headers: await _authHeaders,
-            body: jsonEncode(body),
-          )
+          .post(Uri.parse(ApiConstants.driverLocation(driverId)),
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
 
       final resBody = _safeJsonDecode(response.body);
-
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const AuthResult(success: true);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(
+          success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
