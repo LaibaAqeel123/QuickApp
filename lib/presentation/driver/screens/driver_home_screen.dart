@@ -104,7 +104,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       });
 
       _showSnackbar(
-        _isOnline ? 'You\'re now Online ✅' : 'You\'re now Offline',
+        _isOnline ? 'You\'re now Online ' : 'You\'re now Offline',
         isError: false,
       );
     } else {

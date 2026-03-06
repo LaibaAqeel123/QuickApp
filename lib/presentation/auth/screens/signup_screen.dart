@@ -1,5 +1,5 @@
 // lib/presentation/auth/screens/signup_screen.dart
-
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -253,10 +253,25 @@ class _SignupScreenState extends State<SignupScreen>
     if (_selectedType == UserType.driver && _licenseDocument != null) {
       setState(() => _loadingMessage = 'Uploading driving license...');
 
-      // Get driverId from registration response
-      final driverId = result.data?['userId']?.toString() ??
-          result.data?['id']?.toString() ??
-          result.data?['sub']?.toString();
+      // Extract userId from JWT token sub claim
+// Register response has no userId but token contains sub = userId
+String? driverId;
+final token = result.data?['token']?.toString();
+if (token != null) {
+  try {
+    final parts = token.split('.');
+    if (parts.length == 3) {
+      final payload = parts[1];
+      final normalized = base64Url.normalize(payload);
+      final decoded = utf8.decode(base64Url.decode(normalized));
+      final json = jsonDecode(decoded) as Map<String, dynamic>;
+      driverId = json['sub']?.toString();
+      debugPrint('║ DRIVER ID FROM JWT: $driverId');
+    }
+  } catch (e) {
+    debugPrint('║ JWT DECODE ERROR: $e');
+  }
+}
 
       if (driverId != null) {
         final fileBytes = await _licenseDocument!.readAsBytes();
