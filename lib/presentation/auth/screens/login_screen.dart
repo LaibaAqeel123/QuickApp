@@ -49,7 +49,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
 
-    // 1️⃣ Login — token saved inside AuthService
+    // 1⃣
+    // Login — token saved inside AuthService
     final loginResult = await AuthService.instance.login(
       email:    _emailController.text.trim(),
       password: _passwordController.text,
@@ -63,7 +64,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // 2️⃣ Fetch profile to get role + status
+    // 2️ Fetch profile to get role + status
     final profileResult = await AuthService.instance.getProfile();
 
     if (!mounted) return;

@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ApiConstants {
   static const String baseUrl = 'https://api.neptasolutions.co.uk';
 
-  // Auth
   static const String register           = '$baseUrl/api/auth/register';
   static const String login              = '$baseUrl/api/auth/login';
   static const String logout             = '$baseUrl/api/auth/logout';
@@ -39,15 +38,14 @@ class AuthResult {
 
 
 class AuthService {
-  
+
   AuthService._();
   static final AuthService instance = AuthService._();
 
- 
   Map<String, String> get _jsonHeaders => {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      };
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
 
   Future<Map<String, String>> get _authHeaders async {
     final token = await getAccessToken();
@@ -58,7 +56,6 @@ class AuthService {
     };
   }
 
-  // Safely extract a field from several possible JSON paths
   String? _extract(Map<String, dynamic> body, List<String> keys) {
     for (final key in keys) {
       if (key.contains('.')) {
@@ -82,9 +79,8 @@ class AuthService {
 
   String _errorMessage(Map<String, dynamic> body) =>
       _extract(body, ['message', 'error', 'detail', 'errors']) ??
-      'Something went wrong. Please try again.';
+          'Something went wrong. Please try again.';
 
- 
   Future<void> saveTokens({
     required String accessToken,
     String? refreshToken,
@@ -128,8 +124,6 @@ class AuthService {
     await prefs.remove(_PrefKeys.userId);
   }
 
-  
- 
   Future<AuthResult> register({
     required String firstName,
     required String lastName,
@@ -137,79 +131,111 @@ class AuthService {
     required String password,
     required String phone,
     required String userType,
-    // Driver-only fields (pass null for Buyer)
     String? licenseNumber,
     String? licensePlate,
     String? vehicleType,
   }) async {
     try {
+      final int userTypeInt = userType == 'Driver' ? 3 : 1;
+
       final body = <String, dynamic>{
-        'firstName': firstName,
-        'lastName':  lastName,
-        'email':     email,
-        'password':  password,
-        'phone':     phone,
-        'userType':  userType,
-        if (licenseNumber != null) 'licenseNumber': licenseNumber,
-        if (licensePlate  != null) 'licensePlate':  licensePlate,
-        if (vehicleType   != null) 'vehicleType':   vehicleType,
+        'firstName':   firstName,
+        'lastName':    lastName,
+        'email':       email,
+        'password':    password,
+        'phoneNumber': phone,
+        'userType':    userTypeInt,
+        if (licenseNumber != null && licenseNumber.isNotEmpty)
+          'licenseNumber': licenseNumber,
+        if (licensePlate != null && licensePlate.isNotEmpty)
+          'licensePlate': licensePlate,
+        if (vehicleType != null && vehicleType.isNotEmpty)
+          'vehicleType': vehicleType,
       };
 
-      final response = await http.post(
+      print('[AUTH] Register → ${ApiConstants.register}');
+      print('[AUTH] Body → ${jsonEncode(body)}');
+
+      final response = await http
+          .post(
         Uri.parse(ApiConstants.register),
         headers: _jsonHeaders,
         body: jsonEncode(body),
-      );
+      )
+          .timeout(const Duration(seconds: 15));
+
+      print('[AUTH] Status → ${response.statusCode}');
+      print('[AUTH] Response → ${response.body}');
 
       final resBody = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody));
-    } catch (e) {
+
       return AuthResult(
-          success: false, message: 'Network error. Check your connection.');
+        success: false,
+        message: _errorMessage(resBody),
+      );
+    } on FormatException catch (e) {
+      print('[AUTH] JSON parse error: $e');
+      return const AuthResult(
+        success: false,
+        message: 'Server returned an unexpected response.',
+      );
+    } on http.ClientException catch (e) {
+      print('[AUTH] HTTP client error: $e');
+      return const AuthResult(
+        success: false,
+        message: 'Connection failed. Please check your internet.',
+      );
+    } catch (e) {
+      print('[AUTH] Unknown error: $e');
+      return AuthResult(
+        success: false,
+        message: 'Error: ${e.toString()}',
+      );
     }
   }
 
-  
   Future<AuthResult> login({
     required String email,
     required String password,
   }) async {
     try {
-      final response = await http.post(
+      print('[AUTH] Login → ${ApiConstants.login}');
+
+      final response = await http
+          .post(
         Uri.parse(ApiConstants.login),
         headers: _jsonHeaders,
         body: jsonEncode({'email': email, 'password': password}),
-      );
+      )
+          .timeout(const Duration(seconds: 15));
+
+      print('[AUTH] Login status → ${response.statusCode}');
+      print('[AUTH] Login response → ${response.body}');
 
       final resBody = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        // Extract token — covers common API shapes
         final token = _extract(resBody, [
           'token',
           'access_token',
           'accessToken',
           'data.token',
-          'data.access_token',
           'data.accessToken',
         ]);
 
         final refreshToken = _extract(resBody, [
           'refresh_token',
           'refreshToken',
-          'data.refresh_token',
           'data.refreshToken',
         ]);
 
         final role = _extract(resBody, [
           'role',
           'userType',
-          'user.role',
-          'user.userType',
           'data.role',
           'data.userType',
         ]);
@@ -217,8 +243,8 @@ class AuthService {
         final userId = _extract(resBody, [
           'id',
           'userId',
-          'user.id',
           'data.id',
+          'data.userId',
         ]);
 
         if (token != null) {
@@ -232,30 +258,47 @@ class AuthService {
 
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(success: false, message: _errorMessage(resBody));
-    } catch (e) {
+
       return AuthResult(
-          success: false, message: 'Network error. Check your connection.');
+        success: false,
+        message: _errorMessage(resBody),
+      );
+    } on FormatException catch (e) {
+      print('[AUTH] JSON parse error: $e');
+      return const AuthResult(
+        success: false,
+        message: 'Server returned an unexpected response.',
+      );
+    } on http.ClientException catch (e) {
+      print('[AUTH] HTTP client error: $e');
+      return const AuthResult(
+        success: false,
+        message: 'Connection failed. Please check your internet.',
+      );
+    } catch (e) {
+      print('[AUTH] Unknown error: $e');
+      return AuthResult(
+        success: false,
+        message: 'Error: ${e.toString()}',
+      );
     }
   }
 
-  
   Future<AuthResult> getProfile() async {
     try {
-      final response = await http.get(
+      final response = await http
+          .get(
         Uri.parse(ApiConstants.me),
         headers: await _authHeaders,
-      );
+      )
+          .timeout(const Duration(seconds: 15));
 
       final resBody = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200) {
-        // Persist role from profile in case login didn't return it
         final role = _extract(resBody, [
           'role',
           'userType',
-          'user.role',
-          'user.userType',
           'data.role',
           'data.userType',
         ]);
@@ -267,12 +310,14 @@ class AuthService {
       }
       return AuthResult(success: false, message: _errorMessage(resBody));
     } catch (e) {
+      print('[AUTH] getProfile error: $e');
       return AuthResult(
-          success: false, message: 'Network error. Check your connection.');
+        success: false,
+        message: 'Error: ${e.toString()}',
+      );
     }
   }
 
-  // ── Logout ─────────────────────────────────────────────
   Future<void> logout() async {
     try {
       await http.post(
@@ -280,28 +325,33 @@ class AuthService {
         headers: await _authHeaders,
       );
     } catch (_) {
-      
     } finally {
       await clearTokens();
     }
   }
 
-
   Future<AuthResult> resendVerification({required String email}) async {
     try {
-      final response = await http.post(
+      final response = await http
+          .post(
         Uri.parse(ApiConstants.resendVerification),
         headers: _jsonHeaders,
         body: jsonEncode({'email': email}),
-      );
+      )
+          .timeout(const Duration(seconds: 15));
+
       final resBody = jsonDecode(response.body) as Map<String, dynamic>;
+
       if (response.statusCode == 200 || response.statusCode == 201) {
         return AuthResult(success: true, data: resBody);
       }
       return AuthResult(success: false, message: _errorMessage(resBody));
     } catch (e) {
+      print('[AUTH] resendVerification error: $e');
       return AuthResult(
-          success: false, message: 'Network error. Check your connection.');
+        success: false,
+        message: 'Error: ${e.toString()}',
+      );
     }
   }
 }
