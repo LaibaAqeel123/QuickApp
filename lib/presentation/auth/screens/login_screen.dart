@@ -3,7 +3,6 @@ import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/constants/app_strings.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/auth/screens/signup_screen.dart';
-import 'package:food_delivery_app/presentation/auth/screens/pending_approval_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/buyer_main_screen.dart';
 import 'package:food_delivery_app/presentation/driver/screens/driver_main_screen.dart';
 
@@ -43,14 +42,29 @@ class _LoginScreenState extends State<LoginScreen> {
     return null;
   }
 
-  // ── Login flow ───────────────────────────────
+  // ── Field extractor ──────────────────────────
+  String? _extractField(Map<String, dynamic> body, List<String> keys) {
+    for (final key in keys) {
+      if (key.contains('.')) {
+        final parts = key.split('.');
+        dynamic node = body;
+        for (final p in parts) {
+          node = (node is Map<String, dynamic>) ? node[p] : null;
+        }
+        if (node != null) return node.toString();
+      } else if (body[key] != null) {
+        return body[key].toString();
+      }
+    }
+    return null;
+  }
+
+  // ── Main login flow ──────────────────────────
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
-
     setState(() => _isLoading = true);
 
-    // 1⃣
-    // Login — token saved inside AuthService
+    // Step 1: Login
     final loginResult = await AuthService.instance.login(
       email:    _emailController.text.trim(),
       password: _passwordController.text,
@@ -64,84 +78,218 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // 2️ Fetch profile to get role + status
+    // Step 2: Get profile
     final profileResult = await AuthService.instance.getProfile();
-
     if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (!profileResult.success) {
-      // Token saved but profile failed — still route by saved role
-      final role = await AuthService.instance.getSavedRole();
-      _navigateByRole(role ?? 'buyer', status: null);
-      return;
-    }
-
-    final body = profileResult.data!;
-
-    // Extract role — adjust keys to match your API response
-    final role = (_extractField(body, [
-              'role',
-              'userType',
-              'user.role',
-              'user.userType',
-              'data.role',
-              'data.userType',
-            ]) ??
-            'buyer')
+    // Step 3: Determine role
+    final loginData = loginResult.data ?? {};
+    String role = (_extractField(loginData, [
+              'role', 'userType', 'user.role', 'data.role',
+            ]) ?? 'customer')
         .toLowerCase();
 
-    // Extract account status (for drivers)
-    final status = _extractField(body, [
-      'status',
-      'accountStatus',
-      'user.status',
-      'data.status',
+    if (profileResult.success && profileResult.data != null) {
+      final pr = _extractField(profileResult.data!, [
+        'role', 'userType', 'user.role', 'data.role',
+      ])?.toLowerCase();
+      if (pr != null && pr.isNotEmpty) role = pr;
+    }
+
+    // Step 4: Route
+    if (role == 'driver' || role == '3') {
+      await _handleDriverFlow(loginData, profileResult.data);
+    } else {
+      _navigateToBuyer();
+    }
+  }
+
+  // ── Driver flow ──────────────────────────────
+  Future<void> _handleDriverFlow(
+    Map<String, dynamic> loginData,
+    Map<String, dynamic>? profileData,
+  ) async {
+    // ── DEBUG ────────────────────────────────────
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║         DRIVER FLOW DEBUG            ║');
+    debugPrint('╠══════════════════════════════════════╣');
+    debugPrint('║ LOGIN DATA:');
+    loginData.forEach((k, v) => debugPrint('║   $k: $v'));
+    debugPrint('║ PROFILE DATA:');
+    profileData?.forEach((k, v) => debugPrint('║   $k: $v'));
+    debugPrint('╚══════════════════════════════════════╝');
+
+    // FIX: Use userId from profile (backend never returns a separate driverId)
+    String? driverId = _extractField(profileData ?? {}, [
+          'userId',
+        ]) ??
+        _extractField(loginData, [
+          'sub',
+        ]);
+
+    debugPrint('║ RESOLVED DRIVER ID: $driverId');
+
+    // Save driverId
+    if (driverId != null) {
+      await AuthService.instance.saveTokens(
+        accessToken: (await AuthService.instance.getAccessToken()) ?? '',
+        driverId: driverId,
+      );
+    }
+
+    // Fetch driver profile for approval status
+    String? approvalStatus;
+    if (driverId != null) {
+      final dr = await AuthService.instance.getDriverProfile(driverId);
+      if (!mounted) return;
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║     DRIVER PROFILE API RESULT        ║');
+      debugPrint('║ SUCCESS: ${dr.success}');
+      debugPrint('║ MESSAGE: ${dr.message}');
+      debugPrint('║ DATA:');
+      dr.data?.forEach((k, v) => debugPrint('║   $k: $v'));
+      debugPrint('╚══════════════════════════════════════╝');
+
+      if (dr.success && dr.data != null) {
+        approvalStatus = _extractField(dr.data!, [
+          'status', 'approvalStatus', 'accountStatus',
+          'isApproved', 'approved',
+          'data.status', 'driver.status',
+        ])?.toLowerCase();
+      }
+    }
+
+    // Fallback to profile data
+    approvalStatus ??= _extractField(profileData ?? {}, [
+      'status', 'approvalStatus', 'accountStatus',
+      'isApproved', 'approved',
     ])?.toLowerCase();
 
-    _navigateByRole(role, status: status);
-  }
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║ FINAL APPROVAL STATUS: "$approvalStatus"');
+    debugPrint('╚══════════════════════════════════════╝');
 
-  /// Safely read a dot-path or top-level key from a JSON map
-  String? _extractField(Map<String, dynamic> body, List<String> keys) {
-    for (final key in keys) {
-      if (key.contains('.')) {
-        final parts = key.split('.');
-        dynamic node = body;
-        for (final p in parts) {
-          if (node is Map<String, dynamic>) {
-            node = node[p];
-          } else {
-            node = null;
-            break;
-          }
-        }
-        if (node != null) return node.toString();
-      } else if (body[key] != null) {
-        return body[key].toString();
-      }
-    }
-    return null;
-  }
-
-  void _navigateByRole(String role, {required String? status}) {
     if (!mounted) return;
 
-    Widget destination;
+    // FIX: Added 'verified' — backend returns "Verified" for approved drivers
+    final isApproved =
+        approvalStatus == 'approved' ||
+        approvalStatus == 'active'   ||
+        approvalStatus == 'verified' || // ← KEY FIX
+        approvalStatus == 'true';
 
-    if (role == 'driver') {
-      // Driver pending approval check
-      if (status == 'pending') {
-        destination = const PendingApprovalScreen();
-      } else {
-        destination = const DriverMainScreen();
-      }
+    debugPrint('║ IS APPROVED: $isApproved');
+
+    if (isApproved) {
+      _navigateToDriver(driverId);
     } else {
-      destination = const BuyerMainScreen();
+      _showPendingApprovalDialog();
     }
+  }
 
+  // ── Pending Approval Popup ────────────────────
+  void _showPendingApprovalDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          // FIX: Wrapped in SingleChildScrollView to prevent overflow on small screens
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.hourglass_top_rounded,
+                      size: 44, color: Colors.orange),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Pending Approval',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Your driver account is currently under review.\n\nOnce our admin team approves your application, you\'ll be able to start accepting deliveries.\n\nThis usually takes 24–48 hours.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                    height: 1.6,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.orange),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.circle, size: 8, color: Colors.orange),
+                      SizedBox(width: 6),
+                      Text(
+                        'Status: Pending',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.orange,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text("OK, I'll Wait"),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Navigation ────────────────────────────────
+  void _navigateToBuyer() {
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => destination),
+      MaterialPageRoute(builder: (_) => const BuyerMainScreen()),
+      (route) => false,
+    );
+  }
+
+  void _navigateToDriver(String? driverId) {
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+          builder: (_) => DriverMainScreen(driverId: driverId)),
       (route) => false,
     );
   }
@@ -172,7 +320,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // ── Logo ──────────────────────────────
                   Center(
                     child: Container(
                       width: 100,
@@ -181,16 +328,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         color: AppColors.primary.withOpacity(0.1),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
-                        Icons.local_shipping_rounded,
-                        size: 50,
-                        color: AppColors.primary,
-                      ),
+                      child: const Icon(Icons.local_shipping_rounded,
+                          size: 50, color: AppColors.primary),
                     ),
                   ),
                   const SizedBox(height: 32),
-
-                  // ── Welcome text ──────────────────────
                   Text(
                     AppStrings.welcomeBack,
                     style: const TextStyle(
@@ -208,8 +350,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 48),
-
-                  // ── Email ─────────────────────────────
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
@@ -221,8 +361,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 20),
-
-                  // ── Password ──────────────────────────
                   TextFormField(
                     controller: _passwordController,
                     obscureText: !_isPasswordVisible,
@@ -241,13 +379,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-
-                  // ── Forgot password ───────────────────
                   Align(
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () {
-                        // TODO: Implement forgot password
+                        // TODO: forgot password
                       },
                       child: const Text(
                         AppStrings.forgotPassword,
@@ -259,8 +395,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
-
-                  // ── Login button ──────────────────────
                   SizedBox(
                     height: 56,
                     child: ElevatedButton(
@@ -270,16 +404,11 @@ class _LoginScreenState extends State<LoginScreen> {
                               width: 24,
                               height: 24,
                               child: CircularProgressIndicator(
-                                color: AppColors.white,
-                                strokeWidth: 2.5,
-                              ),
-                            )
+                                  color: AppColors.white, strokeWidth: 2.5))
                           : const Text(AppStrings.login),
                     ),
                   ),
                   const SizedBox(height: 32),
-
-                  // ── Sign Up Link ──────────────────────
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -288,12 +417,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: TextStyle(color: AppColors.textSecondary),
                       ),
                       TextButton(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                                builder: (_) => const SignupScreen()),
-                          );
-                        },
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                              builder: (_) => const SignupScreen()),
+                        ),
                         child: const Text(
                           AppStrings.signUp,
                           style: TextStyle(
