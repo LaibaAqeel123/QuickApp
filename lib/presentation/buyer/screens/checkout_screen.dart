@@ -26,19 +26,19 @@ class CheckoutScreen extends StatefulWidget {
 }
 
 class _CheckoutScreenState extends State<CheckoutScreen> {
-  // ── Address state ──────────────────────────────────────
+  // ── Address ────────────────────────────────────────────
   List<Map<String, dynamic>> _addresses          = [];
   Map<String, dynamic>?      _selectedAddress;
   bool                       _isLoadingAddresses = true;
 
-  // ── Form state ─────────────────────────────────────────
+  // ── Form ───────────────────────────────────────────────
   String    _deliveryType  = 'Standard';
   String    _paymentMethod = 'Card';
   DateTime  _selectedDate  = DateTime.now().add(const Duration(days: 1));
   TimeOfDay _selectedTime  = const TimeOfDay(hour: 10, minute: 0);
 
-  final _specialInstructionsController = TextEditingController();
-  final _discountCodeController         = TextEditingController();
+  final _instructionsCtrl = TextEditingController();
+  final _discountCtrl     = TextEditingController();
 
   bool _isPlacingOrder = false;
 
@@ -50,36 +50,22 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   @override
   void dispose() {
-    _specialInstructionsController.dispose();
-    _discountCodeController.dispose();
+    _instructionsCtrl.dispose();
+    _discountCtrl.dispose();
     super.dispose();
   }
 
-  // ── Load addresses and pick default ───────────────────
+  // ── Load addresses ─────────────────────────────────────
   Future<void> _loadAddresses() async {
     setState(() => _isLoadingAddresses = true);
-
     final result = await AuthService.instance.getAddresses();
-
     if (!mounted) return;
-
     if (result.success) {
-      final list = (result.data ?? [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
-
-      // Auto-select the default address, otherwise the first one
-      Map<String, dynamic>? defaultAddr;
-      if (list.isNotEmpty) {
-        defaultAddr = list.firstWhere(
-          (a) => a['isDefault'] == true,
-          orElse: () => list.first,
-        );
-      }
-
+      final list = (result.data ?? []).whereType<Map<String, dynamic>>().toList();
       setState(() {
-        _addresses         = list;
-        _selectedAddress   = defaultAddr;
+        _addresses          = list;
+        _selectedAddress    = list.isEmpty ? null
+            : list.firstWhere((a) => a['isDefault'] == true, orElse: () => list.first);
         _isLoadingAddresses = false;
       });
     } else {
@@ -87,113 +73,120 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
-  // ── Open AddressScreen in selection mode ───────────────
   Future<void> _changeAddress() async {
     final picked = await Navigator.push<Map<String, dynamic>>(
       context,
-      MaterialPageRoute(
-        builder: (_) => const AddressScreen(selectionMode: true),
-      ),
+      MaterialPageRoute(builder: (_) => const AddressScreen(selectionMode: true)),
     );
-    if (picked != null) {
-      setState(() => _selectedAddress = picked);
-    }
+    if (picked != null) setState(() => _selectedAddress = picked);
   }
 
-  // ── Add a new address inline from checkout ─────────────
   Future<void> _addNewAddress() async {
     final saved = await AddressBottomSheet.show(context);
     if (saved != null && mounted) {
       await _loadAddresses();
-      // Select the newly created address if it came back with an ID
       if (saved['id'] != null || saved['addressId'] != null) {
         setState(() => _selectedAddress = saved);
       }
     }
   }
 
-  // ── Address ID helper ──────────────────────────────────
-  String? get _deliveryAddressId {
-    if (_selectedAddress == null) return null;
-    return (_selectedAddress!['id'] ?? _selectedAddress!['addressId'])?.toString();
-  }
+  String? get _deliveryAddressId =>
+      (_selectedAddress?['id'] ?? _selectedAddress?['addressId'])?.toString();
 
-  // ── Full address display helper ────────────────────────
-  String _formatAddress(Map<String, dynamic> a) {
-    final parts = <String>[
-      if ((a['streetAddress'] ?? '').toString().isNotEmpty)
-        a['streetAddress'].toString(),
-      if ((a['apartment'] ?? '').toString().isNotEmpty)
-        a['apartment'].toString(),
-      if ((a['city'] ?? '').toString().isNotEmpty) a['city'].toString(),
-      if ((a['postalCode'] ?? '').toString().isNotEmpty)
-        a['postalCode'].toString(),
-    ];
-    return parts.join(', ');
-  }
+  String _formatAddress(Map<String, dynamic> a) => [
+    if ((a['streetAddress'] ?? '').toString().isNotEmpty) a['streetAddress'],
+    if ((a['apartment']     ?? '').toString().isNotEmpty) a['apartment'],
+    if ((a['city']          ?? '').toString().isNotEmpty) a['city'],
+    if ((a['postalCode']    ?? '').toString().isNotEmpty) a['postalCode'],
+  ].join(', ');
 
   String _addressLabel(Map<String, dynamic> a) {
-    final lbl  = a['label']?.toString() ?? '';
+    final lbl = a['label']?.toString() ?? '';
     if (lbl.isNotEmpty) return lbl;
     final type = (a['addressType'] as num?)?.toInt() ?? 0;
     return ['Home', 'Work', 'Other'][type.clamp(0, 2)];
   }
 
-  IconData _addressTypeIcon(Map<String, dynamic> a) {
-    final type = (a['addressType'] as num?)?.toInt() ?? 0;
-    switch (type) {
+  IconData _addressIcon(Map<String, dynamic> a) {
+    switch ((a['addressType'] as num?)?.toInt() ?? 0) {
       case 1:  return Icons.work_outline;
       case 2:  return Icons.location_on_outlined;
       default: return Icons.home_outlined;
     }
   }
 
-  // ── Place Order ────────────────────────────────────────
+  // ── Date / Time ────────────────────────────────────────
+  Future<void> _pickDate() async {
+    final d = await showDatePicker(
+      context:     context,
+      initialDate: _selectedDate,
+      firstDate:   DateTime.now(),
+      lastDate:    DateTime.now().add(const Duration(days: 30)),
+      builder: (ctx, child) => Theme(data: Theme.of(ctx).copyWith(
+          colorScheme: ColorScheme.light(primary: AppColors.primary)), child: child!),
+    );
+    if (d != null) setState(() => _selectedDate = d);
+  }
+
+  Future<void> _pickTime() async {
+    final t = await showTimePicker(
+      context:     context,
+      initialTime: _selectedTime,
+      builder: (ctx, child) => Theme(data: Theme.of(ctx).copyWith(
+          colorScheme: ColorScheme.light(primary: AppColors.primary)), child: child!),
+    );
+    if (t != null) setState(() => _selectedTime = t);
+  }
+
+  String get _fmtDate {
+    const m = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${_selectedDate.day} ${m[_selectedDate.month]} ${_selectedDate.year}';
+  }
+  String get _fmtTime => _selectedTime.format(context);
+
+  // ── PLACE ORDER ────────────────────────────────────────
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
-      _showSnackBar(
-        'Please select a delivery address to continue.',
-        isError: true,
-      );
+      _snack('Please select a delivery address to continue.', isError: true);
       return;
     }
-
     setState(() => _isPlacingOrder = true);
 
     final result = await AuthService.instance.checkout(
       deliveryAddressId:   _deliveryAddressId!,
       billingAddressId:    _deliveryAddressId!,
-      specialInstructions: _specialInstructionsController.text.trim(),
-      discountCode: _discountCodeController.text.trim().isEmpty
-          ? null
-          : _discountCodeController.text.trim(),
+      specialInstructions: _instructionsCtrl.text.trim(),
+      discountCode: _discountCtrl.text.trim().isEmpty ? null : _discountCtrl.text.trim(),
     );
 
     if (!mounted) return;
     setState(() => _isPlacingOrder = false);
 
     if (result.success) {
+      // ✅ FIX: Clear the cart on the server immediately after a successful
+      // order. CartScreen.didChangeDependencies() will reload when the user
+      // navigates back to the Cart tab and find it empty.
+      // Fire-and-forget — the order is already confirmed even if this fails.
+      AuthService.instance.clearCart().ignore();
+
+      // pushReplacement so back-button from OrderSuccessScreen goes to Home,
+      // not back to the checkout form.
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) => OrderSuccessScreen(orderData: result.data),
-        ),
+        MaterialPageRoute(builder: (_) => OrderSuccessScreen(orderData: result.data)),
       );
     } else {
-      _showSnackBar(
-          result.message ?? 'Checkout failed. Please try again.',
-          isError: true);
+      _snack(result.message ?? 'Checkout failed. Please try again.', isError: true);
     }
   }
 
-  void _showSnackBar(String msg, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content:         Text(msg),
-        backgroundColor: isError ? AppColors.error : AppColors.success,
-        duration:        const Duration(seconds: 4),
-      ),
-    );
+  void _snack(String msg, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content:         Text(msg),
+      backgroundColor: isError ? AppColors.error : AppColors.success,
+      duration:        const Duration(seconds: 4),
+    ));
   }
 
   @override
@@ -201,653 +194,359 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Checkout'),
+        title:           const Text('Checkout'),
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
-        elevation: 0,
+        elevation:       0,
       ),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // ── Delivery Address ───────────────────────
-              _SectionCard(
-                title: 'Delivery Address',
-                icon:  Icons.location_on,
-                child: _isLoadingAddresses
-                    ? const _LoadingRow(label: 'Loading addresses...')
-                    : _selectedAddress != null
-                        ? _SelectedAddressTile(
-                            label:       _addressLabel(_selectedAddress!),
-                            fullAddress: _formatAddress(_selectedAddress!),
-                            typeIcon:    _addressTypeIcon(_selectedAddress!),
-                            isDefault:   _selectedAddress!['isDefault'] == true,
-                            onChangeAddress: _changeAddress,
-                          )
-                        : _NoAddressWidget(
-                            hasAddresses: _addresses.isNotEmpty,
-                            onSelectAddress: _changeAddress,
-                            onAddAddress:    _addNewAddress,
-                          ),
-              ),
-              const SizedBox(height: 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
 
-              // ── Delivery Schedule ──────────────────────
-              _SectionCard(
-                title: 'Delivery Schedule',
-                icon:  Icons.access_time,
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _DeliveryTypeButton(
-                            label:      'Standard',
-                            subtitle:   'Next day',
-                            icon:       Icons.local_shipping,
-                            isSelected: _deliveryType == 'Standard',
-                            onTap: () => setState(() => _deliveryType = 'Standard'),
-                          ),
+            // ── Delivery Address ─────────────────────────
+            _Section(title: 'Delivery Address', icon: Icons.location_on,
+              child: _isLoadingAddresses
+                  ? const _Loading(label: 'Loading addresses...')
+                  : _selectedAddress != null
+                      ? _AddressTile(
+                          label:       _addressLabel(_selectedAddress!),
+                          address:     _formatAddress(_selectedAddress!),
+                          icon:        _addressIcon(_selectedAddress!),
+                          isDefault:   _selectedAddress!['isDefault'] == true,
+                          onChange:    _changeAddress,
+                        )
+                      : _NoAddress(
+                          hasAddresses: _addresses.isNotEmpty,
+                          onSelect:     _changeAddress,
+                          onAdd:        _addNewAddress,
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _DeliveryTypeButton(
-                            label:      'Express',
-                            subtitle:   'Same day',
-                            icon:       Icons.bolt,
-                            isSelected: _deliveryType == 'Express',
-                            onTap: () => setState(() => _deliveryType = 'Express'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () async {
-                              final date = await showDatePicker(
-                                context:     context,
-                                initialDate: _selectedDate,
-                                firstDate:   DateTime.now(),
-                                lastDate: DateTime.now().add(const Duration(days: 30)),
-                              );
-                              if (date != null) setState(() => _selectedDate = date);
-                            },
-                            child: _DateTimeBox(
-                              icon:  Icons.calendar_today,
-                              label: '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: GestureDetector(
-                            onTap: () async {
-                              final time = await showTimePicker(
-                                context:     context,
-                                initialTime: _selectedTime,
-                              );
-                              if (time != null) setState(() => _selectedTime = time);
-                            },
-                            child: _DateTimeBox(
-                              icon:  Icons.access_time,
-                              label: _selectedTime.format(context),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
+            ),
+            const SizedBox(height: 16),
 
-              // ── Special Instructions ───────────────────
-              _SectionCard(
-                title: 'Special Instructions',
-                icon:  Icons.note_alt_outlined,
-                child: TextField(
-                  controller: _specialInstructionsController,
-                  maxLines:   3,
-                  decoration: const InputDecoration(
-                    hintText: 'Any special delivery instructions? (optional)',
-                    hintStyle: TextStyle(color: AppColors.textHint),
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.all(12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
+            // ── Delivery Schedule ────────────────────────
+            _Section(title: 'Delivery Schedule', icon: Icons.access_time,
+              child: Column(children: [
+                Row(children: [
+                  Expanded(child: _DeliveryBtn(
+                    label: 'Standard', sub: 'Next day', icon: Icons.local_shipping,
+                    selected: _deliveryType == 'Standard',
+                    onTap: () => setState(() => _deliveryType = 'Standard'),
+                  )),
+                  const SizedBox(width: 12),
+                  Expanded(child: _DeliveryBtn(
+                    label: 'Express', sub: 'Same day', icon: Icons.flash_on,
+                    selected: _deliveryType == 'Express',
+                    onTap: () => setState(() => _deliveryType = 'Express'),
+                  )),
+                ]),
+                const SizedBox(height: 16),
+                Row(children: [
+                  Expanded(child: GestureDetector(onTap: _pickDate,
+                      child: _DTBox(icon: Icons.calendar_today, label: _fmtDate))),
+                  const SizedBox(width: 12),
+                  Expanded(child: GestureDetector(onTap: _pickTime,
+                      child: _DTBox(icon: Icons.access_time, label: _fmtTime))),
+                ]),
+              ]),
+            ),
+            const SizedBox(height: 16),
 
-              // ── Discount Code ──────────────────────────
-              _SectionCard(
-                title: 'Discount Code',
-                icon:  Icons.local_offer_outlined,
-                child: TextField(
-                  controller: _discountCodeController,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    hintText: 'Enter discount code (optional)',
-                    hintStyle: TextStyle(color: AppColors.textHint),
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.all(12),
-                    prefixIcon: Icon(Icons.confirmation_number_outlined),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
+            // ── Payment Method ───────────────────────────
+            _Section(title: 'Payment Method', icon: Icons.payment,
+              child: Column(children: [
+                _PayTile(icon: Icons.credit_card,     title: 'Credit / Debit Card',
+                    sub: 'Visa, Mastercard, Amex',   value: 'Card',
+                    group: _paymentMethod,  onChange: (v) => setState(() => _paymentMethod = v ?? 'Card')),
+                const SizedBox(height: 12),
+                _PayTile(icon: Icons.account_balance, title: 'Bank Transfer',
+                    sub: 'Direct bank payment',      value: 'Bank',
+                    group: _paymentMethod,  onChange: (v) => setState(() => _paymentMethod = v ?? 'Card')),
+                const SizedBox(height: 12),
+                _PayTile(icon: Icons.receipt_long,    title: 'Invoice',
+                    sub: 'Pay within 30 days',       value: 'Invoice',
+                    group: _paymentMethod,  onChange: (v) => setState(() => _paymentMethod = v ?? 'Card')),
+              ]),
+            ),
+            const SizedBox(height: 16),
 
-              // ── Payment Method ─────────────────────────
-              _SectionCard(
-                title: 'Payment Method',
-                icon:  Icons.payment,
-                child: Column(
-                  children: [
-                    _PaymentMethodTile(
-                      icon:       Icons.credit_card,
-                      title:      'Credit/Debit Card',
-                      subtitle:   'Visa, Mastercard, Amex',
-                      value:      'Card',
-                      groupValue: _paymentMethod,
-                      onChanged:  (v) => setState(() => _paymentMethod = v!),
-                    ),
-                    const SizedBox(height: 12),
-                    _PaymentMethodTile(
-                      icon:       Icons.account_balance,
-                      title:      'Bank Transfer',
-                      subtitle:   'Direct bank transfer',
-                      value:      'Bank',
-                      groupValue: _paymentMethod,
-                      onChanged:  (v) => setState(() => _paymentMethod = v!),
-                    ),
-                    const SizedBox(height: 12),
-                    _PaymentMethodTile(
-                      icon:       Icons.money,
-                      title:      'Cash on Delivery',
-                      subtitle:   'Pay when you receive',
-                      value:      'Cash',
-                      groupValue: _paymentMethod,
-                      onChanged:  (v) => setState(() => _paymentMethod = v!),
-                    ),
-                  ],
-                ),
+            // ── Special Instructions ─────────────────────
+            _Section(title: 'Special Instructions', icon: Icons.note_alt_outlined,
+              child: TextField(
+                controller: _instructionsCtrl, maxLines: 3,
+                decoration: _inputDeco('Any special delivery instructions...'),
               ),
-              const SizedBox(height: 16),
+            ),
+            const SizedBox(height: 16),
 
-              // ── Order Summary ──────────────────────────
-              _SectionCard(
-                title: 'Order Summary',
-                icon:  Icons.receipt,
-                child: Column(
-                  children: [
-                    _SummaryRow(title: 'Subtotal',
-                        value: '£${widget.subtotal.toStringAsFixed(2)}'),
-                    const SizedBox(height: 8),
-                    _SummaryRow(title: 'Delivery Fee',
-                        value: '£${widget.deliveryFee.toStringAsFixed(2)}'),
-                    const Divider(height: 24),
-                    _SummaryRow(
-                      title:  'Total',
-                      value:  '£${widget.total.toStringAsFixed(2)}',
-                      isBold: true,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
+            // ── Discount Code ────────────────────────────
+            _Section(title: 'Discount Code', icon: Icons.local_offer_outlined,
+              child: Row(children: [
+                Expanded(child: TextField(
+                    controller: _discountCtrl,
+                    decoration: _inputDeco('Enter discount code'))),
+                const SizedBox(width: 12),
+                ElevatedButton(onPressed: () {},
+                    style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14)),
+                    child: const Text('Apply')),
+              ]),
+            ),
+            const SizedBox(height: 16),
 
-              // ── Place Order Button ─────────────────────
-              SizedBox(
-                height: 56,
-                child: ElevatedButton(
-                  onPressed: _isPlacingOrder ? null : _placeOrder,
-                  child: _isPlacingOrder
-                      ? const SizedBox(
-                          width: 24, height: 24,
-                          child: CircularProgressIndicator(
-                              color: AppColors.white, strokeWidth: 2.5))
-                      : const Text('Place Order'),
+            // ── Order Summary ────────────────────────────
+            _Section(title: 'Order Summary', icon: Icons.receipt,
+              child: Column(children: [
+                ...widget.cartItems.take(3).map((item) {
+                  final name  = (item['productName'] ?? item['product']?['name'] ?? 'Product').toString();
+                  final qty   = ((item['quantity'] ?? 0) as num).toInt();
+                  final price = ((item['unitPrice'] ?? item['price'] ?? item['product']?['price'] ?? 0) as num).toDouble();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      Expanded(child: Text('$name × $qty',
+                          style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+                          maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      Text('£${(price * qty).toStringAsFixed(2)}',
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+                    ]),
+                  );
+                }),
+                if (widget.cartItems.length > 3)
+                  Padding(padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('+ ${widget.cartItems.length - 3} more items',
+                        style: const TextStyle(fontSize: 13, color: AppColors.textSecondary))),
+                const Divider(height: 24),
+                _SummRow('Subtotal',     '£${widget.subtotal.toStringAsFixed(2)}'),
+                const SizedBox(height: 8),
+                _SummRow('Delivery Fee', '£${widget.deliveryFee.toStringAsFixed(2)}'),
+                const Divider(height: 24),
+                _SummRow('Total', '£${widget.total.toStringAsFixed(2)}', bold: true),
+              ]),
+            ),
+            const SizedBox(height: 24),
+
+            // ── Place Order Button ───────────────────────
+            SizedBox(
+              height: 56,
+              child: ElevatedButton(
+                onPressed: _isPlacingOrder ? null : _placeOrder,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
+                child: _isPlacingOrder
+                    ? const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        SizedBox(width: 20, height: 20,
+                            child: CircularProgressIndicator(color: AppColors.white, strokeWidth: 2)),
+                        SizedBox(width: 12),
+                        Text('Placing Order...', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ])
+                    : const Text('Place Order',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 32),
+          ]),
         ),
       ),
     );
   }
+
+  InputDecoration _inputDeco(String hint) => InputDecoration(
+    hintText: hint, hintStyle: const TextStyle(color: AppColors.textHint),
+    filled: true, fillColor: AppColors.background,
+    contentPadding: const EdgeInsets.all(12),
+    border:        OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: AppColors.border)),
+    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: AppColors.border)),
+    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+  );
 }
 
-// ══════════════════════════════════════════════════════════
-//  SELECTED ADDRESS TILE
-// ══════════════════════════════════════════════════════════
-class _SelectedAddressTile extends StatelessWidget {
-  final String label;
-  final String fullAddress;
-  final IconData typeIcon;
-  final bool isDefault;
-  final VoidCallback onChangeAddress;
-
-  const _SelectedAddressTile({
-    required this.label,
-    required this.fullAddress,
-    required this.typeIcon,
-    required this.isDefault,
-    required this.onChangeAddress,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(typeIcon, color: AppColors.primary, size: 22),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(label,
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary)),
-                  if (isDefault) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Text('Default',
-                          style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.primary)),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(fullAddress,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textSecondary,
-                      height: 1.4),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis),
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: onChangeAddress,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.swap_horiz, size: 16, color: AppColors.primary),
-                    SizedBox(width: 4),
-                    Text('Change Address',
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.primary)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════
-//  NO ADDRESS WIDGET
-// ══════════════════════════════════════════════════════════
-class _NoAddressWidget extends StatelessWidget {
-  final bool hasAddresses;
-  final VoidCallback onSelectAddress;
-  final VoidCallback onAddAddress;
-
-  const _NoAddressWidget({
-    required this.hasAddresses,
-    required this.onSelectAddress,
-    required this.onAddAddress,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.error.withOpacity(0.05),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.error.withOpacity(0.3)),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.location_off_outlined,
-                  color: AppColors.error, size: 22),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  'No delivery address selected.\nPlease add or select one.',
-                  style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.error,
-                      height: 1.4),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            if (hasAddresses)
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onSelectAddress,
-                  icon:  const Icon(Icons.list_alt, size: 18),
-                  label: const Text('Select Saved'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                  ),
-                ),
-              ),
-            if (hasAddresses) const SizedBox(width: 10),
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: onAddAddress,
-                icon:  const Icon(Icons.add_location_alt, size: 18),
-                label: const Text('Add New'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════
-//  LOADING ROW
-// ══════════════════════════════════════════════════════════
-class _LoadingRow extends StatelessWidget {
-  final String label;
-  const _LoadingRow({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        const SizedBox(
-          width: 18, height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        const SizedBox(width: 12),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 14, color: AppColors.textSecondary)),
-      ],
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
 //  SECTION CARD
-// ══════════════════════════════════════════════════════════
-class _SectionCard extends StatelessWidget {
-  final String  title;
-  final IconData icon;
-  final Widget  child;
-
-  const _SectionCard({
-    required this.title,
-    required this.icon,
-    required this.child,
-  });
-
+// ══════════════════════════════════════════════════════════════
+class _Section extends StatelessWidget {
+  final String title; final IconData icon; final Widget child;
+  const _Section({required this.title, required this.icon, required this.child});
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 20, color: AppColors.primary),
-              const SizedBox(width: 8),
-              Text(title,
-                  style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          child,
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16), border: Border.all(color: AppColors.border)),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Icon(icon, size: 20, color: AppColors.primary), const SizedBox(width: 8),
+        Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+      ]),
+      const SizedBox(height: 16),
+      child,
+    ]),
+  );
 }
 
-// ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+//  ADDRESS TILE
+// ══════════════════════════════════════════════════════════════
+class _AddressTile extends StatelessWidget {
+  final String label, address; final IconData icon;
+  final bool isDefault; final VoidCallback onChange;
+  const _AddressTile({required this.label, required this.address,
+      required this.icon, required this.isDefault, required this.onChange});
+  @override
+  Widget build(BuildContext context) => Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Container(padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+      child: Icon(icon, color: AppColors.primary, size: 22)),
+    const SizedBox(width: 12),
+    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+        if (isDefault) ...[const SizedBox(width: 8),
+          Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
+            child: const Text('Default', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.success)))],
+      ]),
+      const SizedBox(height: 4),
+      Text(address, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+    ])),
+    TextButton(onPressed: onChange, child: const Text('Change')),
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  NO ADDRESS WIDGET
+// ══════════════════════════════════════════════════════════════
+class _NoAddress extends StatelessWidget {
+  final bool hasAddresses; final VoidCallback onSelect, onAdd;
+  const _NoAddress({required this.hasAddresses, required this.onSelect, required this.onAdd});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Container(padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: AppColors.warning.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.warning.withOpacity(0.3))),
+      child: Row(children: [
+        Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 20), const SizedBox(width: 8),
+        const Expanded(child: Text('No delivery address selected.',
+            style: TextStyle(fontSize: 13, color: AppColors.textPrimary))),
+      ])),
+    const SizedBox(height: 12),
+    if (hasAddresses)
+      OutlinedButton.icon(onPressed: onSelect,
+          icon: const Icon(Icons.location_on), label: const Text('Select Address'))
+    else
+      ElevatedButton.icon(onPressed: onAdd,
+          icon: const Icon(Icons.add_location_alt), label: const Text('Add New Address')),
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  LOADING ROW
+// ══════════════════════════════════════════════════════════════
+class _Loading extends StatelessWidget {
+  final String label; const _Loading({required this.label});
+  @override
+  Widget build(BuildContext context) => Row(children: [
+    const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+    const SizedBox(width: 12),
+    Text(label, style: const TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  DELIVERY TYPE BUTTON
-// ══════════════════════════════════════════════════════════
-class _DeliveryTypeButton extends StatelessWidget {
-  final String label;
-  final String subtitle;
-  final IconData icon;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  const _DeliveryTypeButton({
-    required this.label,
-    required this.subtitle,
-    required this.icon,
-    required this.isSelected,
-    required this.onTap,
-  });
-
+// ══════════════════════════════════════════════════════════════
+class _DeliveryBtn extends StatelessWidget {
+  final String label, sub; final IconData icon;
+  final bool selected; final VoidCallback onTap;
+  const _DeliveryBtn({required this.label, required this.sub, required this.icon,
+      required this.selected, required this.onTap});
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.1)
-              : AppColors.surfaceLight,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? AppColors.primary : AppColors.border,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            Icon(icon,
-                color: isSelected ? AppColors.primary : AppColors.textSecondary,
-                size: 28),
-            const SizedBox(height: 8),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: isSelected ? AppColors.primary : AppColors.textPrimary)),
-            const SizedBox(height: 4),
-            Text(subtitle,
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textSecondary)),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => GestureDetector(onTap: onTap, child: Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: selected ? AppColors.primary.withOpacity(0.1) : AppColors.surfaceLight,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: selected ? AppColors.primary : AppColors.border, width: selected ? 2 : 1)),
+    child: Column(children: [
+      Icon(icon, color: selected ? AppColors.primary : AppColors.textSecondary, size: 28),
+      const SizedBox(height: 8),
+      Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
+          color: selected ? AppColors.primary : AppColors.textPrimary)),
+      const SizedBox(height: 4),
+      Text(sub, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+    ]),
+  ));
 }
 
-// ══════════════════════════════════════════════════════════
-//  DATE TIME BOX
-// ══════════════════════════════════════════════════════════
-class _DateTimeBox extends StatelessWidget {
-  final IconData icon;
-  final String   label;
+// ══════════════════════════════════════════════════════════════
+//  DATE/TIME BOX
+// ══════════════════════════════════════════════════════════════
+class _DTBox extends StatelessWidget {
+  final IconData icon; final String label;
+  const _DTBox({required this.icon, required this.label});
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border)),
+    child: Row(children: [
+      Icon(icon, size: 20, color: AppColors.primary), const SizedBox(width: 12),
+      Flexible(child: Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+          overflow: TextOverflow.ellipsis)),
+    ]),
+  );
+}
 
-  const _DateTimeBox({required this.icon, required this.label});
-
+// ══════════════════════════════════════════════════════════════
+//  PAYMENT TILE
+// ══════════════════════════════════════════════════════════════
+class _PayTile extends StatelessWidget {
+  final IconData icon; final String title, sub, value, group;
+  final ValueChanged<String?> onChange;
+  const _PayTile({required this.icon, required this.title, required this.sub,
+      required this.value, required this.group, required this.onChange});
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final sel = value == group;
+    return GestureDetector(onTap: () => onChange(value), child: Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.surfaceLight,
+        color: sel ? AppColors.primary.withOpacity(0.1) : AppColors.surfaceLight,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: AppColors.primary),
-          const SizedBox(width: 12),
-          Text(label,
-              style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary)),
-        ],
-      ),
-    );
+        border: Border.all(color: sel ? AppColors.primary : AppColors.border, width: sel ? 2 : 1)),
+      child: Row(children: [
+        Icon(icon, color: sel ? AppColors.primary : AppColors.textSecondary, size: 28),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+              color: sel ? AppColors.primary : AppColors.textPrimary)),
+          const SizedBox(height: 4),
+          Text(sub, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+        ])),
+        Radio<String>(value: value, groupValue: group, onChanged: onChange, activeColor: AppColors.primary),
+      ]),
+    ));
   }
 }
 
-// ══════════════════════════════════════════════════════════
-//  PAYMENT METHOD TILE
-// ══════════════════════════════════════════════════════════
-class _PaymentMethodTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String value;
-  final String groupValue;
-  final ValueChanged<String?> onChanged;
-
-  const _PaymentMethodTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-    required this.groupValue,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isSelected = value == groupValue;
-    return GestureDetector(
-      onTap: () => onChanged(value),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.1)
-              : AppColors.surfaceLight,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? AppColors.primary : AppColors.border,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(icon,
-                color: isSelected ? AppColors.primary : AppColors.textSecondary,
-                size: 28),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: isSelected
-                              ? AppColors.primary
-                              : AppColors.textPrimary)),
-                  const SizedBox(height: 4),
-                  Text(subtitle,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textSecondary)),
-                ],
-              ),
-            ),
-            Radio<String>(
-              value:      value,
-              groupValue: groupValue,
-              onChanged:  onChanged,
-              activeColor: AppColors.primary,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
 //  SUMMARY ROW
-// ══════════════════════════════════════════════════════════
-class _SummaryRow extends StatelessWidget {
-  final String title;
-  final String value;
-  final bool   isBold;
-
-  const _SummaryRow({
-    required this.title,
-    required this.value,
-    this.isBold = false,
-  });
-
+// ══════════════════════════════════════════════════════════════
+class _SummRow extends StatelessWidget {
+  final String title, value; final bool bold;
+  const _SummRow(this.title, this.value, {this.bold = false});
   @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(title,
-            style: TextStyle(
-                fontSize:   isBold ? 16 : 14,
-                fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-                color:      AppColors.textPrimary)),
-        Text(value,
-            style: TextStyle(
-                fontSize:   isBold ? 18 : 15,
-                fontWeight: isBold ? FontWeight.bold : FontWeight.w600,
-                color:      isBold ? AppColors.primary : AppColors.textPrimary)),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+    Text(title, style: TextStyle(fontSize: bold ? 16 : 14,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal, color: AppColors.textPrimary)),
+    Text(value, style: TextStyle(fontSize: bold ? 18 : 15,
+        fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+        color: bold ? AppColors.primary : AppColors.textPrimary)),
+  ]);
 }

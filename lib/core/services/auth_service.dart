@@ -1,8 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// ══════════════════════════════════════════════════════════
+//  API CONSTANTS
+// ══════════════════════════════════════════════════════════
 class ApiConstants {
   static const String baseUrl = 'https://api.neptasolutions.co.uk';
 
@@ -27,11 +31,18 @@ class ApiConstants {
   static const String cartItems     = '$baseUrl/api/cart/items';
   static String cartItem(String id) => '$baseUrl/api/cart/items/$id';
 
-  // ── Orders ─────────────────────────────────────────────
-  static const String ordersCheckout   = '$baseUrl/api/orders/checkout';
-  static const String myOrders         = '$baseUrl/api/orders/my';
-  static String myOrderById(String id) => '$baseUrl/api/orders/my/$id';
-  static String cancelOrder(String id) => '$baseUrl/api/orders/my/$id/cancel';
+  // ── Orders (Buyer) ─────────────────────────────────────
+  static const String ordersCheckout      = '$baseUrl/api/orders/checkout';
+  static const String myOrders            = '$baseUrl/api/orders/my';
+  static String myOrderById(String id)    => '$baseUrl/api/orders/my/$id';
+  static String cancelOrder(String id)    => '$baseUrl/api/orders/my/$id/cancel';
+  static const String myOrdersAnalytics   = '$baseUrl/api/orders/my/analytics';
+
+  // ── Orders (Supplier) ──────────────────────────────────
+  static const String supplierOrders                              = '$baseUrl/api/orders/supplier';
+  static String supplierOrderById(String id)                      => '$baseUrl/api/orders/supplier/$id';
+  static String supplierOrderItemStatus(String oId, String iId)  => '$baseUrl/api/orders/supplier/$oId/items/$iId/status';
+  static const String supplierOrdersAnalytics                     = '$baseUrl/api/orders/supplier/analytics';
 
   // ── Categories ─────────────────────────────────────────
   static const String categories     = '$baseUrl/api/categories';
@@ -41,8 +52,33 @@ class ApiConstants {
   static const String addresses              = '$baseUrl/api/addresses';
   static String addressById(String id)       => '$baseUrl/api/addresses/$id';
   static String addressDefault(String id)    => '$baseUrl/api/addresses/$id/default';
+
+  // ── Catalog ────────────────────────────────────────────
+  static const String catalogProducts         = '$baseUrl/api/catalog/products';
+  static String catalogProductById(String id) => '$baseUrl/api/catalog/products/$id';
+  static const String catalogFilters          = '$baseUrl/api/catalog/filters';
 }
 
+// ══════════════════════════════════════════════════════════
+//  RESULT TYPES
+// ══════════════════════════════════════════════════════════
+class AuthResult {
+  final bool success;
+  final String? message;
+  final Map<String, dynamic>? data;
+  const AuthResult({required this.success, this.message, this.data});
+}
+
+class ApiResult<T> {
+  final bool success;
+  final String? message;
+  final T? data;
+  const ApiResult({required this.success, this.message, this.data});
+}
+
+// ══════════════════════════════════════════════════════════
+//  PREF KEYS
+// ══════════════════════════════════════════════════════════
 class _PrefKeys {
   static const String accessToken  = 'access_token';
   static const String refreshToken = 'refresh_token';
@@ -51,29 +87,18 @@ class _PrefKeys {
   static const String driverId     = 'driver_id';
 }
 
-class AuthResult {
-  final bool success;
-  final String? message;
-  final Map<String, dynamic>? data;
-  const AuthResult({required this.success, this.message, this.data});
-}
-
-/// Generic API result that can carry any data type.
-class ApiResult<T> {
-  final bool success;
-  final String? message;
-  final T? data;
-  const ApiResult({required this.success, this.message, this.data});
-}
-
+// ══════════════════════════════════════════════════════════
+//  AUTH SERVICE
+// ══════════════════════════════════════════════════════════
 class AuthService {
   AuthService._();
   static final AuthService instance = AuthService._();
 
+  // ── Headers ────────────────────────────────────────────
   Map<String, String> get _jsonHeaders => {
-    'Content-Type': 'application/json',
-    'Accept':       'application/json',
-  };
+        'Content-Type': 'application/json',
+        'Accept':       'application/json',
+      };
 
   Future<Map<String, String>> get _authHeaders async {
     final token = await getAccessToken();
@@ -84,24 +109,21 @@ class AuthService {
     };
   }
 
+  // ── JSON helpers ───────────────────────────────────────
   Map<String, dynamic> _safeJsonDecode(String body) {
     try {
       if (body.trim().isEmpty) return {};
       final decoded = jsonDecode(body);
       if (decoded is Map<String, dynamic>) return decoded;
       return {};
-    } catch (_) {
-      return {};
-    }
+    } catch (_) { return {}; }
   }
 
   dynamic _safeJsonDecodeAny(String body) {
     try {
       if (body.trim().isEmpty) return null;
       return jsonDecode(body);
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
   String? _extract(Map<String, dynamic> body, List<String> keys) {
@@ -136,11 +158,10 @@ class AuthService {
   }
 
   String _friendlyNetworkError(String raw) {
-    if (raw.contains('SocketException') || raw.contains('Failed host lookup')) {
+    if (raw.contains('SocketException') || raw.contains('Failed host lookup'))
       return 'No internet connection. Please check your network.';
-    }
     if (raw.contains('TimeoutException')) return 'Request timed out. Please try again.';
-    if (raw.contains('HandshakeException')) return 'Secure connection failed. Please try again.';
+    if (raw.contains('HandshakeException')) return 'Secure connection failed.';
     return 'Network error. Please try again.';
   }
 
@@ -213,84 +234,105 @@ class AuthService {
     String? licensePlate,
   }) async {
     try {
-      final Map<String, dynamic> body = {
-        'email':         email,
-        'password':      password,
-        'firstName':     firstName,
-        'lastName':      lastName,
-        'phoneNumber':   phoneNumber,
-        'userType':      userType,
-        'businessName':  businessName  ?? '',
+      final body = {
+        'email': email, 'password': password,
+        'firstName': firstName, 'lastName': lastName,
+        'phoneNumber': phoneNumber, 'userType': userType,
+        'businessName': businessName ?? '',
         'licenseNumber': licenseNumber ?? '',
-        'licensePlate':  licensePlate  ?? '',
+        'licensePlate': licensePlate ?? '',
       };
-      final jsonString = jsonEncode(body);
-      _log('REGISTER REQUEST', ApiConstants.register, extra: 'JSON: $jsonString');
+      _log('REGISTER REQUEST', ApiConstants.register);
       final response = await http
           .post(Uri.parse(ApiConstants.register),
-          headers: _jsonHeaders, body: jsonString)
+              headers: _jsonHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 60));
       _log('REGISTER RESPONSE', ApiConstants.register,
           status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final token        = _extract(resBody, ['token', 'access_token', 'accessToken']);
-        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token']);
-        final role         = _extract(resBody, ['role', 'userType']);
-        final userId       = _extract(resBody, ['id', 'userId', 'sub']);
+        final token = _extract(resBody, ['token', 'access_token', 'accessToken']);
         if (token != null) {
           await saveTokens(
-              accessToken: token, refreshToken: refreshToken,
-              role: role?.toLowerCase(), userId: userId);
+            accessToken: token,
+            refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
+            role: _extract(resBody, ['role', 'userType'])?.toLowerCase(),
+            userId: _extract(resBody, ['id', 'userId', 'sub']),
+          );
         }
         return AuthResult(success: true, data: resBody);
       }
-      if (response.statusCode == 500) {
-        final serverMsg = _extract(resBody, ['message', 'error', 'detail', 'title']);
-        return AuthResult(
-            success: false,
-            message: serverMsg ?? 'Server error (500). Please try again.');
-      }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
   Future<AuthResult> uploadDriverDocument({
-    required String driverId,
-    required String documentType,
-    required List<int> fileBytes,
-    required String fileName,
-  }) async {
-    try {
-      final uri = Uri.parse(
-          '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
-      final request = http.MultipartRequest('POST', uri);
-      final token   = await getAccessToken();
-      if (token != null) {
-        request.headers['Authorization'] = 'Bearer $token';
-        request.headers['Accept']        = 'application/json';
-      }
-      request.files.add(
-          http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
-      _log('UPLOAD DOCUMENT REQUEST', uri.toString(),
-          extra: 'documentType: $documentType | fileName: $fileName');
-      final streamed = await request.send().timeout(const Duration(seconds: 60));
-      final response = await http.Response.fromStream(streamed);
-      _log('UPLOAD DOCUMENT RESPONSE', uri.toString(),
-          status: response.statusCode, body: response.body);
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return const AuthResult(success: true);
-      }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
-    } on Exception catch (e) {
-      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
+  required String driverId,
+  required String documentType,
+  required List<int> fileBytes,
+  required String fileName,
+}) async {
+  try {
+    final uri = Uri.parse(
+        '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
+
+    debugPrint('║ UPLOAD DOC URL: $uri');
+    debugPrint('║ UPLOAD DOC fileName: $fileName');
+    debugPrint('║ UPLOAD DOC fileSize: ${fileBytes.length} bytes');
+
+    final request = http.MultipartRequest('POST', uri);
+    final token = await getAccessToken();
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+      request.headers['Accept'] = 'application/json';
     }
+
+    // Detect MIME type from file extension
+    final ext = fileName.split('.').last.toLowerCase();
+    String mimeType;
+    String mimeSubtype;
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        mimeType = 'image'; mimeSubtype = 'jpeg'; break;
+      case 'png':
+        mimeType = 'image'; mimeSubtype = 'png'; break;
+      case 'pdf':
+        mimeType = 'application'; mimeSubtype = 'pdf'; break;
+      default:
+        mimeType = 'image'; mimeSubtype = 'jpeg';
+    }
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        fileBytes,
+        filename: fileName,
+        contentType: MediaType(mimeType, mimeSubtype),
+      ),
+    );
+
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final response = await http.Response.fromStream(streamed);
+
+    debugPrint('║ UPLOAD DOC STATUS: ${response.statusCode}');
+    debugPrint('║ UPLOAD DOC RESPONSE BODY: ${response.body}');
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return const AuthResult(success: true);
+    }
+    return AuthResult(
+      success: false,
+      message: _errorMessage(_safeJsonDecode(response.body), response.statusCode),
+    );
+  } on Exception catch (e) {
+    debugPrint('║ UPLOAD DOC EXCEPTION: $e');
+    return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
   }
+}
 
   Future<AuthResult> login({
     required String email,
@@ -300,26 +342,28 @@ class AuthService {
       _log('LOGIN REQUEST', ApiConstants.login, extra: 'email: $email');
       final response = await http
           .post(Uri.parse(ApiConstants.login),
-          headers: _jsonHeaders,
-          body: jsonEncode({'email': email, 'password': password}))
+              headers: _jsonHeaders,
+              body: jsonEncode({'email': email, 'password': password}))
           .timeout(const Duration(seconds: 30));
       _log('LOGIN RESPONSE', ApiConstants.login,
           status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final token        = _extract(resBody, ['token', 'access_token', 'accessToken', 'data.token']);
-        final refreshToken = _extract(resBody, ['refreshToken', 'refresh_token']);
-        final role         = _extract(resBody, ['role', 'userType', 'user.role', 'data.role']);
-        final userId       = _extract(resBody, ['id', 'userId', 'user.id', 'sub']);
+        final token = _extract(resBody,
+            ['token', 'access_token', 'accessToken', 'data.token']);
         if (token != null) {
           await saveTokens(
-              accessToken: token, refreshToken: refreshToken,
-              role: role?.toLowerCase(), userId: userId);
+            accessToken: token,
+            refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
+            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])
+                ?.toLowerCase(),
+            userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
+          );
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -341,8 +385,8 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -352,13 +396,12 @@ class AuthService {
     try {
       final response = await http
           .post(Uri.parse(ApiConstants.resendVerification),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
       }
-      return AuthResult(
-          success: false,
+      return AuthResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -370,8 +413,8 @@ class AuthService {
       final rt = await getRefreshToken();
       await http
           .post(Uri.parse(ApiConstants.logout),
-          headers: await _authHeaders,
-          body: jsonEncode({'refreshToken': rt ?? ''}))
+              headers: await _authHeaders,
+              body: jsonEncode({'refreshToken': rt ?? ''}))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
     } finally {
@@ -386,10 +429,8 @@ class AuthService {
     try {
       final response = await http
           .get(Uri.parse(ApiConstants.driverById(driverId)),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-      _log('DRIVER PROFILE RESPONSE', ApiConstants.driverById(driverId),
-          status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200) {
         final id = _extract(resBody, ['id', 'driverId', 'data.id']);
@@ -399,8 +440,8 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -410,14 +451,14 @@ class AuthService {
     try {
       final response = await http
           .patch(Uri.parse(ApiConstants.driverToggle(driverId)),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -434,23 +475,21 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'latitude':         latitude,
-        'longitude':        longitude,
-        'accuracyMeters':   accuracyMeters ?? 0,
-        'speedKmh':         speedKmh ?? 0,
-        'headingDegrees':   headingDegrees ?? 0,
+        'latitude': latitude, 'longitude': longitude,
+        'accuracyMeters': accuracyMeters ?? 0,
+        'speedKmh': speedKmh ?? 0,
+        'headingDegrees': headingDegrees ?? 0,
         'isActiveDelivery': isActiveDelivery,
       };
       final response = await http
           .post(Uri.parse(ApiConstants.driverLocation(driverId)),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
-      final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const AuthResult(success: true);
       }
-      return AuthResult(
-          success: false, message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -470,8 +509,7 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -480,17 +518,13 @@ class AuthService {
 
   Future<ApiResult<void>> clearCart() async {
     try {
-      _log('CLEAR CART REQUEST', ApiConstants.cart);
       final response = await http
           .delete(Uri.parse(ApiConstants.cart), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-      _log('CLEAR CART RESPONSE', ApiConstants.cart,
-          status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -504,23 +538,22 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'productId':           productId,
-        'quantity':            quantity,
+        'productId': productId,
+        'quantity': quantity,
         'specialInstructions': specialInstructions ?? '',
       };
       _log('ADD CART ITEM REQUEST', ApiConstants.cartItems,
           extra: 'productId: $productId | qty: $quantity');
       final response = await http
           .post(Uri.parse(ApiConstants.cartItems),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('ADD CART ITEM RESPONSE', ApiConstants.cartItems,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -533,23 +566,18 @@ class AuthService {
     String? specialInstructions,
   }) async {
     try {
-      final url  = ApiConstants.cartItem(cartItemId);
+      final url = ApiConstants.cartItem(cartItemId);
       final body = {
-        'quantity':            quantity,
+        'quantity': quantity,
         'specialInstructions': specialInstructions ?? '',
       };
-      _log('UPDATE CART ITEM REQUEST', url,
-          extra: 'cartItemId: $cartItemId | qty: $quantity');
       final response = await http
           .put(Uri.parse(url), headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
-      _log('UPDATE CART ITEM RESPONSE', url,
-          status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -559,17 +587,13 @@ class AuthService {
   Future<ApiResult<void>> removeCartItem(String cartItemId) async {
     try {
       final url = ApiConstants.cartItem(cartItemId);
-      _log('REMOVE CART ITEM REQUEST', url, extra: 'cartItemId: $cartItemId');
       final response = await http
           .delete(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-      _log('REMOVE CART ITEM RESPONSE', url,
-          status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -577,8 +601,10 @@ class AuthService {
   }
 
   // ══════════════════════════════════════════════════════
-  //  ORDERS
+  //  ORDERS — BUYER
   // ══════════════════════════════════════════════════════
+
+  /// POST /api/orders/checkout
   Future<ApiResult<Map<String, dynamic>>> checkout({
     required String deliveryAddressId,
     String? billingAddressId,
@@ -596,21 +622,21 @@ class AuthService {
           extra: 'deliveryAddressId: $deliveryAddressId');
       final response = await http
           .post(Uri.parse(ApiConstants.ordersCheckout),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CHECKOUT RESPONSE', ApiConstants.ordersCheckout,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
+  /// GET /api/orders/my
   Future<ApiResult<Map<String, dynamic>>> getMyOrders({
     int? status,
     String? dateFrom,
@@ -620,8 +646,7 @@ class AuthService {
   }) async {
     try {
       final params = {
-        'page':     page.toString(),
-        'pageSize': pageSize.toString(),
+        'page': page.toString(), 'pageSize': pageSize.toString(),
         if (status   != null) 'status':   status.toString(),
         if (dateFrom != null) 'dateFrom': dateFrom,
         if (dateTo   != null) 'dateTo':   dateTo,
@@ -636,14 +661,14 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
+  /// GET /api/orders/my/{orderId}
   Future<ApiResult<Map<String, dynamic>>> getMyOrderById(String orderId) async {
     try {
       final url = ApiConstants.myOrderById(orderId);
@@ -656,14 +681,14 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
+  /// POST /api/orders/my/{orderId}/cancel
   Future<ApiResult<void>> cancelOrder({
     required String orderId,
     required String reason,
@@ -673,16 +698,148 @@ class AuthService {
       _log('CANCEL ORDER REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-          headers: await _authHeaders,
-          body: jsonEncode({'reason': reason}))
+              headers: await _authHeaders,
+              body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('CANCEL ORDER RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/orders/my/analytics
+  Future<ApiResult<Map<String, dynamic>>> getMyOrdersAnalytics() async {
+    try {
+      _log('GET MY ORDERS ANALYTICS REQUEST', ApiConstants.myOrdersAnalytics);
+      final response = await http
+          .get(Uri.parse(ApiConstants.myOrdersAnalytics),
+              headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET MY ORDERS ANALYTICS RESPONSE', ApiConstants.myOrdersAnalytics,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  ORDERS — SUPPLIER
+  // ══════════════════════════════════════════════════════
+
+  /// GET /api/orders/supplier
+  Future<ApiResult<Map<String, dynamic>>> getSupplierOrders({
+    int? status,
+    String? dateFrom,
+    String? dateTo,
+    int page     = 1,
+    int pageSize = 10,
+  }) async {
+    try {
+      final params = {
+        'page': page.toString(), 'pageSize': pageSize.toString(),
+        if (status   != null) 'status':   status.toString(),
+        if (dateFrom != null) 'dateFrom': dateFrom,
+        if (dateTo   != null) 'dateTo':   dateTo,
+      };
+      final uri = Uri.parse(ApiConstants.supplierOrders)
+          .replace(queryParameters: params);
+      _log('GET SUPPLIER ORDERS REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET SUPPLIER ORDERS RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/orders/supplier/{orderId}
+  Future<ApiResult<Map<String, dynamic>>> getSupplierOrderById(
+      String orderId) async {
+    try {
+      final url = ApiConstants.supplierOrderById(orderId);
+      _log('GET SUPPLIER ORDER DETAIL REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET SUPPLIER ORDER DETAIL RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// PATCH /api/orders/supplier/{orderId}/items/{orderItemId}/status
+  Future<ApiResult<void>> updateSupplierOrderItemStatus({
+    required String orderId,
+    required String orderItemId,
+    required int    status,
+  }) async {
+    try {
+      final url = ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
+      _log('UPDATE ORDER ITEM STATUS REQUEST', url,
+          extra: 'status: $status');
+      final response = await http
+          .patch(Uri.parse(url),
+              headers: await _authHeaders,
+              body: jsonEncode({'status': status}))
+          .timeout(const Duration(seconds: 30));
+      _log('UPDATE ORDER ITEM STATUS RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return const ApiResult(success: true);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/orders/supplier/analytics
+  Future<ApiResult<Map<String, dynamic>>> getSupplierOrdersAnalytics({
+    String? dateFrom,
+    String? dateTo,
+  }) async {
+    try {
+      final params = <String, String>{
+        if (dateFrom != null) 'dateFrom': dateFrom,
+        if (dateTo   != null) 'dateTo':   dateTo,
+      };
+      final uri = Uri.parse(ApiConstants.supplierOrdersAnalytics)
+          .replace(queryParameters: params.isEmpty ? null : params);
+      _log('GET SUPPLIER ANALYTICS REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET SUPPLIER ANALYTICS RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -692,6 +849,8 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  CATEGORIES
   // ══════════════════════════════════════════════════════
+
+  /// GET /api/categories
   Future<ApiResult<List<dynamic>>> getCategories({
     bool includeInactive = false,
     int? parentId,
@@ -701,7 +860,8 @@ class AuthService {
         'includeInactive': includeInactive.toString(),
         if (parentId != null) 'parentId': parentId.toString(),
       };
-      final uri = Uri.parse(ApiConstants.categories).replace(queryParameters: params);
+      final uri = Uri.parse(ApiConstants.categories)
+          .replace(queryParameters: params);
       _log('GET CATEGORIES REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -717,28 +877,24 @@ class AuthService {
         }
         return const ApiResult(success: true, data: []);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
+  /// GET /api/categories/{id}
   Future<ApiResult<Map<String, dynamic>>> getCategoryById(int id) async {
     try {
       final url = ApiConstants.categoryById(id);
-      _log('GET CATEGORY BY ID REQUEST', url);
       final response = await http
           .get(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-      _log('GET CATEGORY BY ID RESPONSE', url,
-          status: response.statusCode, body: response.body);
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
@@ -749,7 +905,7 @@ class AuthService {
   //  ADDRESSES
   // ══════════════════════════════════════════════════════
 
-  /// GET /api/addresses — fetch all saved addresses for the logged-in user.
+  /// GET /api/addresses
   Future<ApiResult<List<dynamic>>> getAddresses() async {
     try {
       _log('GET ADDRESSES REQUEST', ApiConstants.addresses);
@@ -767,15 +923,14 @@ class AuthService {
         }
         return const ApiResult(success: true, data: []);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  /// POST /api/addresses — create a new address.
+  /// POST /api/addresses
   Future<ApiResult<Map<String, dynamic>>> createAddress({
     required String streetAddress,
     String? apartment,
@@ -791,38 +946,30 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'streetAddress': streetAddress,
-        'apartment':     apartment ?? '',
-        'city':          city,
-        'state':         state ?? '',
-        'postalCode':    postalCode,
-        'country':       country ?? 'UK',
-        'addressType':   addressType,
-        'isDefault':     isDefault,
-        'label':         label ?? '',
-        'latitude':      latitude  ?? 0.0,
-        'longitude':     longitude ?? 0.0,
+        'streetAddress': streetAddress, 'apartment': apartment ?? '',
+        'city': city, 'state': state ?? '', 'postalCode': postalCode,
+        'country': country ?? 'UK', 'addressType': addressType,
+        'isDefault': isDefault, 'label': label ?? '',
+        'latitude': latitude ?? 0.0, 'longitude': longitude ?? 0.0,
       };
-      _log('CREATE ADDRESS REQUEST', ApiConstants.addresses,
-          extra: 'city: $city | postalCode: $postalCode');
+      _log('CREATE ADDRESS REQUEST', ApiConstants.addresses);
       final response = await http
           .post(Uri.parse(ApiConstants.addresses),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CREATE ADDRESS RESPONSE', ApiConstants.addresses,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  /// PUT /api/addresses/{id} — update an existing address.
+  /// PUT /api/addresses/{id}
   Future<ApiResult<Map<String, dynamic>>> updateAddress({
     required String addressId,
     required String streetAddress,
@@ -840,19 +987,13 @@ class AuthService {
     try {
       final url  = ApiConstants.addressById(addressId);
       final body = {
-        'streetAddress': streetAddress,
-        'apartment':     apartment ?? '',
-        'city':          city,
-        'state':         state ?? '',
-        'postalCode':    postalCode,
-        'country':       country ?? 'UK',
-        'addressType':   addressType,
-        'isDefault':     isDefault,
-        'label':         label ?? '',
-        'latitude':      latitude  ?? 0.0,
-        'longitude':     longitude ?? 0.0,
+        'streetAddress': streetAddress, 'apartment': apartment ?? '',
+        'city': city, 'state': state ?? '', 'postalCode': postalCode,
+        'country': country ?? 'UK', 'addressType': addressType,
+        'isDefault': isDefault, 'label': label ?? '',
+        'latitude': latitude ?? 0.0, 'longitude': longitude ?? 0.0,
       };
-      _log('UPDATE ADDRESS REQUEST', url, extra: 'addressId: $addressId');
+      _log('UPDATE ADDRESS REQUEST', url);
       final response = await http
           .put(Uri.parse(url), headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
@@ -861,19 +1002,18 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  /// DELETE /api/addresses/{id} — remove an address.
+  /// DELETE /api/addresses/{id}
   Future<ApiResult<void>> deleteAddress(String addressId) async {
     try {
       final url = ApiConstants.addressById(addressId);
-      _log('DELETE ADDRESS REQUEST', url, extra: 'addressId: $addressId');
+      _log('DELETE ADDRESS REQUEST', url);
       final response = await http
           .delete(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
@@ -882,19 +1022,18 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  /// PATCH /api/addresses/{id}/default — mark an address as the default.
+  /// PATCH /api/addresses/{id}/default
   Future<ApiResult<void>> setDefaultAddress(String addressId) async {
     try {
       final url = ApiConstants.addressDefault(addressId);
-      _log('SET DEFAULT ADDRESS REQUEST', url, extra: 'addressId: $addressId');
+      _log('SET DEFAULT ADDRESS REQUEST', url);
       final response = await http
           .patch(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
@@ -903,8 +1042,101 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  CATALOG
+  // ══════════════════════════════════════════════════════
+
+  /// GET /api/catalog/products
+  Future<ApiResult<Map<String, dynamic>>> getCatalogProducts({
+    String? search,
+    int?    categoryId,
+    double? minPrice,
+    double? maxPrice,
+    double? minRating,
+    String? supplierId,
+    int     page     = 1,
+    int     pageSize = 10,
+  }) async {
+    try {
+      final params = <String, String>{
+        'page': page.toString(), 'pageSize': pageSize.toString(),
+        if (search     != null && search.isNotEmpty) 'search': search,
+        if (categoryId != null) 'categoryId': categoryId.toString(),
+        if (minPrice   != null) 'minPrice':   minPrice.toString(),
+        if (maxPrice   != null) 'maxPrice':   maxPrice.toString(),
+        if (minRating  != null) 'minRating':  minRating.toString(),
+        if (supplierId != null && supplierId.isNotEmpty) 'supplierId': supplierId,
+      };
+      final uri = Uri.parse(ApiConstants.catalogProducts)
+          .replace(queryParameters: params);
+      _log('GET CATALOG PRODUCTS REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET CATALOG PRODUCTS RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        final decoded = _safeJsonDecodeAny(response.body);
+        if (decoded is List) {
+          return ApiResult(
+              success: true,
+              data: {'items': decoded, 'total': decoded.length});
+        }
+        if (decoded is Map<String, dynamic>) {
+          return ApiResult(success: true, data: decoded);
+        }
+        return const ApiResult(
+            success: true, data: {'items': [], 'total': 0});
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/catalog/products/{id}
+  Future<ApiResult<Map<String, dynamic>>> getCatalogProductById(
+      String id) async {
+    try {
+      final url = ApiConstants.catalogProductById(id);
+      _log('GET CATALOG PRODUCT BY ID REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET CATALOG PRODUCT BY ID RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/catalog/filters
+  Future<ApiResult<Map<String, dynamic>>> getCatalogFilters() async {
+    try {
+      _log('GET CATALOG FILTERS REQUEST', ApiConstants.catalogFilters);
+      final response = await http
+          .get(Uri.parse(ApiConstants.catalogFilters),
+              headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET CATALOG FILTERS RESPONSE', ApiConstants.catalogFilters,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
