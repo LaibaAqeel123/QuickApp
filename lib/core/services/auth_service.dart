@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ══════════════════════════════════════════════════════════
@@ -269,33 +270,69 @@ class AuthService {
   }
 
   Future<AuthResult> uploadDriverDocument({
-    required String driverId,
-    required String documentType,
-    required List<int> fileBytes,
-    required String fileName,
-  }) async {
-    try {
-      final uri = Uri.parse(
-          '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
-      final request = http.MultipartRequest('POST', uri);
-      final token = await getAccessToken();
-      if (token != null) {
-        request.headers['Authorization'] = 'Bearer $token';
-        request.headers['Accept'] = 'application/json';
-      }
-      request.files.add(
-          http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
-      final streamed = await request.send().timeout(const Duration(seconds: 60));
-      final response = await http.Response.fromStream(streamed);
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return const AuthResult(success: true);
-      }
-      return AuthResult(success: false,
-          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
-    } on Exception catch (e) {
-      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
+  required String driverId,
+  required String documentType,
+  required List<int> fileBytes,
+  required String fileName,
+}) async {
+  try {
+    final uri = Uri.parse(
+        '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
+
+    debugPrint('║ UPLOAD DOC URL: $uri');
+    debugPrint('║ UPLOAD DOC fileName: $fileName');
+    debugPrint('║ UPLOAD DOC fileSize: ${fileBytes.length} bytes');
+
+    final request = http.MultipartRequest('POST', uri);
+    final token = await getAccessToken();
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+      request.headers['Accept'] = 'application/json';
     }
+
+    // Detect MIME type from file extension
+    final ext = fileName.split('.').last.toLowerCase();
+    String mimeType;
+    String mimeSubtype;
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        mimeType = 'image'; mimeSubtype = 'jpeg'; break;
+      case 'png':
+        mimeType = 'image'; mimeSubtype = 'png'; break;
+      case 'pdf':
+        mimeType = 'application'; mimeSubtype = 'pdf'; break;
+      default:
+        mimeType = 'image'; mimeSubtype = 'jpeg';
+    }
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        fileBytes,
+        filename: fileName,
+        contentType: MediaType(mimeType, mimeSubtype),
+      ),
+    );
+
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final response = await http.Response.fromStream(streamed);
+
+    debugPrint('║ UPLOAD DOC STATUS: ${response.statusCode}');
+    debugPrint('║ UPLOAD DOC RESPONSE BODY: ${response.body}');
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return const AuthResult(success: true);
+    }
+    return AuthResult(
+      success: false,
+      message: _errorMessage(_safeJsonDecode(response.body), response.statusCode),
+    );
+  } on Exception catch (e) {
+    debugPrint('║ UPLOAD DOC EXCEPTION: $e');
+    return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
   }
+}
 
   Future<AuthResult> login({
     required String email,

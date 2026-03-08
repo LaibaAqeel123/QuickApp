@@ -277,12 +277,17 @@ if (token != null) {
         final fileBytes = await _licenseDocument!.readAsBytes();
         final fileName  = _licenseDocument!.name;
 
+        
+
         final uploadResult = await AuthService.instance.uploadDriverDocument(
           driverId:     driverId,
-          documentType: 'DrivingLicense',
+          documentType: 'License',
           fileBytes:    fileBytes,
           fileName:     fileName,
         );
+        // ADD THESE DEBUG LINES:
+debugPrint('║ UPLOAD RESULT SUCCESS: ${uploadResult.success}');
+debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
 
         if (!mounted) return;
 
