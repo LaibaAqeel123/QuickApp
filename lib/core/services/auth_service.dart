@@ -71,9 +71,9 @@ class AuthService {
   static final AuthService instance = AuthService._();
 
   Map<String, String> get _jsonHeaders => {
-        'Content-Type': 'application/json',
-        'Accept':       'application/json',
-      };
+    'Content-Type': 'application/json',
+    'Accept':       'application/json',
+  };
 
   Future<Map<String, String>> get _authHeaders async {
     final token = await getAccessToken();
@@ -228,7 +228,7 @@ class AuthService {
       _log('REGISTER REQUEST', ApiConstants.register, extra: 'JSON: $jsonString');
       final response = await http
           .post(Uri.parse(ApiConstants.register),
-              headers: _jsonHeaders, body: jsonString)
+          headers: _jsonHeaders, body: jsonString)
           .timeout(const Duration(seconds: 60));
       _log('REGISTER RESPONSE', ApiConstants.register,
           status: response.statusCode, body: response.body);
@@ -300,8 +300,8 @@ class AuthService {
       _log('LOGIN REQUEST', ApiConstants.login, extra: 'email: $email');
       final response = await http
           .post(Uri.parse(ApiConstants.login),
-              headers: _jsonHeaders,
-              body: jsonEncode({'email': email, 'password': password}))
+          headers: _jsonHeaders,
+          body: jsonEncode({'email': email, 'password': password}))
           .timeout(const Duration(seconds: 30));
       _log('LOGIN RESPONSE', ApiConstants.login,
           status: response.statusCode, body: response.body);
@@ -352,7 +352,7 @@ class AuthService {
     try {
       final response = await http
           .post(Uri.parse(ApiConstants.resendVerification),
-              headers: await _authHeaders)
+          headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
@@ -370,8 +370,8 @@ class AuthService {
       final rt = await getRefreshToken();
       await http
           .post(Uri.parse(ApiConstants.logout),
-              headers: await _authHeaders,
-              body: jsonEncode({'refreshToken': rt ?? ''}))
+          headers: await _authHeaders,
+          body: jsonEncode({'refreshToken': rt ?? ''}))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
     } finally {
@@ -386,7 +386,7 @@ class AuthService {
     try {
       final response = await http
           .get(Uri.parse(ApiConstants.driverById(driverId)),
-              headers: await _authHeaders)
+          headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('DRIVER PROFILE RESPONSE', ApiConstants.driverById(driverId),
           status: response.statusCode, body: response.body);
@@ -410,7 +410,7 @@ class AuthService {
     try {
       final response = await http
           .patch(Uri.parse(ApiConstants.driverToggle(driverId)),
-              headers: await _authHeaders)
+          headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
@@ -443,7 +443,7 @@ class AuthService {
       };
       final response = await http
           .post(Uri.parse(ApiConstants.driverLocation(driverId)),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
@@ -512,7 +512,7 @@ class AuthService {
           extra: 'productId: $productId | qty: $quantity');
       final response = await http
           .post(Uri.parse(ApiConstants.cartItems),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('ADD CART ITEM RESPONSE', ApiConstants.cartItems,
           status: response.statusCode, body: response.body);
@@ -596,7 +596,7 @@ class AuthService {
           extra: 'deliveryAddressId: $deliveryAddressId');
       final response = await http
           .post(Uri.parse(ApiConstants.ordersCheckout),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CHECKOUT RESPONSE', ApiConstants.ordersCheckout,
           status: response.statusCode, body: response.body);
@@ -673,8 +673,8 @@ class AuthService {
       _log('CANCEL ORDER REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-              headers: await _authHeaders,
-              body: jsonEncode({'reason': reason}))
+          headers: await _authHeaders,
+          body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('CANCEL ORDER RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -807,7 +807,7 @@ class AuthService {
           extra: 'city: $city | postalCode: $postalCode');
       final response = await http
           .post(Uri.parse(ApiConstants.addresses),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CREATE ADDRESS RESPONSE', ApiConstants.addresses,
           status: response.statusCode, body: response.body);
