@@ -10,10 +10,10 @@ class CartScreen extends StatefulWidget {
   const CartScreen({super.key, this.onBrowseTap});
 
   @override
-  State<CartScreen> createState() => CartScreenState(); // ← public so GlobalKey works
+  // PUBLIC so BuyerMainScreen can call reload() via GlobalKey
+  State<CartScreen> createState() => CartScreenState();
 }
 
-// ← public class so BuyerMainScreen can call .reload() via GlobalKey
 class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _cartItems = [];
   Map<String, dynamic>?      _cartMeta;
@@ -34,14 +34,13 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  /// Public method — called by BuyerMainScreen whenever the Cart tab is selected,
-  /// and also after a successful checkout from CheckoutScreen.
+  /// Public — called by BuyerMainScreen via GlobalKey whenever the Cart tab
+  /// is selected, ensuring the cart is always fresh (especially after checkout).
   void reload() => _loadCart();
 
-  // Also reload if the app comes back from background
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _loadCart();
+    if (state == AppLifecycleState.resumed && mounted) _loadCart();
   }
 
   // ── Field helpers ──────────────────────────────────────
@@ -152,6 +151,7 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
       backgroundColor: isError ? AppColors.error : AppColors.success,
+      duration: const Duration(seconds: 2),
     ));
   }
 
@@ -165,15 +165,15 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
 
   IconData _icon(String cat) {
     switch (cat.toLowerCase()) {
-      case 'bakery':          return Icons.bakery_dining;
-      case 'meat':            return Icons.set_meal;
-      case 'dairy':           return Icons.local_drink;
+      case 'bakery':         return Icons.bakery_dining;
+      case 'meat':           return Icons.set_meal;
+      case 'dairy':          return Icons.local_drink;
       case 'fruit & veg':
       case 'fruit and veg':
-      case 'vegetables':      return Icons.eco;
-      case 'frozen':          return Icons.ac_unit;
-      case 'dry items':       return Icons.grain;
-      default:                return Icons.shopping_basket;
+      case 'vegetables':     return Icons.eco;
+      case 'frozen':         return Icons.ac_unit;
+      case 'dry items':      return Icons.grain;
+      default:               return Icons.shopping_basket;
     }
   }
 
@@ -192,7 +192,8 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
                 ? const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     child: SizedBox(width: 20, height: 20,
-                      child: CircularProgressIndicator(color: AppColors.white, strokeWidth: 2)),
+                      child: CircularProgressIndicator(
+                          color: AppColors.white, strokeWidth: 2)),
                   )
                 : TextButton(
                     onPressed: _clearCart,
@@ -207,69 +208,68 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
               ? _ErrorView(message: _errorMessage!, onRetry: _loadCart)
               : _cartItems.isEmpty
                   ? _EmptyCartView(
-                      onBrowse: widget.onBrowseTap ?? () => Navigator.pop(context),
+                      onBrowse: widget.onBrowseTap ?? () {},
                     )
-                  : Column(
-                      children: [
-                        Expanded(
-                          child: RefreshIndicator(
-                            onRefresh: _loadCart,
-                            child: ListView.builder(
-                              padding: const EdgeInsets.all(16),
-                              itemCount: _grouped.length,
-                              itemBuilder: (_, i) {
-                                final supplier = _grouped.keys.elementAt(i);
-                                final items    = _grouped[supplier]!;
-                                return Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      margin: const EdgeInsets.only(bottom: 12),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.primary.withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Row(children: [
-                                        const Icon(Icons.store,
-                                            color: AppColors.primary, size: 20),
-                                        const SizedBox(width: 8),
-                                        Text(supplier, style: const TextStyle(
-                                            fontSize: 15, fontWeight: FontWeight.bold,
-                                            color: AppColors.primary)),
-                                      ]),
+                  : Column(children: [
+                      Expanded(
+                        child: RefreshIndicator(
+                          onRefresh: _loadCart,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _grouped.length,
+                            itemBuilder: (_, i) {
+                              final supplier = _grouped.keys.elementAt(i);
+                              final items    = _grouped[supplier]!;
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(12),
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
                                     ),
-                                    ...items.map((item) {
-                                      final gi = _cartItems.indexOf(item);
-                                      return _CartItemCard(
-                                        item:       item,
-                                        itemName:   _itemName(item),
-                                        price:      _itemPrice(item),
-                                        quantity:   _itemQty(item),
-                                        unit:       _itemUnit(item),
-                                        icon:       _icon(_itemCategory(item)),
-                                        onIncrease: () => _updateQuantity(gi, _itemQty(item) + 1),
-                                        onDecrease: () => _updateQuantity(gi, _itemQty(item) - 1),
-                                        onRemove:   () => _removeItem(gi),
-                                      );
-                                    }),
-                                    const SizedBox(height: 16),
-                                  ],
-                                );
-                              },
-                            ),
+                                    child: Row(children: [
+                                      const Icon(Icons.store,
+                                          color: AppColors.primary, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(supplier, style: const TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary)),
+                                    ]),
+                                  ),
+                                  ...items.map((item) {
+                                    final gi = _cartItems.indexOf(item);
+                                    return _CartItemCard(
+                                      item:       item,
+                                      itemName:   _itemName(item),
+                                      price:      _itemPrice(item),
+                                      quantity:   _itemQty(item),
+                                      unit:       _itemUnit(item),
+                                      icon:       _icon(_itemCategory(item)),
+                                      onIncrease: () => _updateQuantity(gi, _itemQty(item) + 1),
+                                      onDecrease: () => _updateQuantity(gi, _itemQty(item) - 1),
+                                      onRemove:   () => _removeItem(gi),
+                                    );
+                                  }),
+                                  const SizedBox(height: 16),
+                                ],
+                              );
+                            },
                           ),
                         ),
-                        _OrderSummaryBar(
-                          subtotal:    _subtotal,
-                          deliveryFee: _deliveryFee,
-                          total:       _total,
-                          cartItems:   _cartItems,
-                          cartMeta:    _cartMeta,
-                          onCheckoutSuccess: _loadCart,
-                        ),
-                      ],
-                    ),
+                      ),
+                      _OrderSummaryBar(
+                        subtotal:          _subtotal,
+                        deliveryFee:       _deliveryFee,
+                        total:             _total,
+                        cartItems:         _cartItems,
+                        cartMeta:          _cartMeta,
+                        onCheckoutSuccess: _loadCart,
+                      ),
+                    ]),
     );
   }
 }
@@ -299,18 +299,17 @@ class _OrderSummaryBar extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surface,
         boxShadow: [BoxShadow(
-          color: Colors.black.withOpacity(0.1),
-          blurRadius: 10, offset: const Offset(0, -5),
-        )],
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10, offset: const Offset(0, -5))],
       ),
       child: SafeArea(
         top: false,
         child: Column(children: [
-          _Row('Subtotal',     '£${subtotal.toStringAsFixed(2)}'),
+          _SummaryRow('Subtotal',     '£${subtotal.toStringAsFixed(2)}'),
           const SizedBox(height: 8),
-          _Row('Delivery Fee', '£${deliveryFee.toStringAsFixed(2)}'),
+          _SummaryRow('Delivery Fee', '£${deliveryFee.toStringAsFixed(2)}'),
           const Divider(height: 24),
-          _Row('Total', '£${total.toStringAsFixed(2)}', bold: true),
+          _SummaryRow('Total', '£${total.toStringAsFixed(2)}', bold: true),
           const SizedBox(height: 16),
           SizedBox(
             width: double.infinity, height: 56,
@@ -339,10 +338,10 @@ class _OrderSummaryBar extends StatelessWidget {
   }
 }
 
-class _Row extends StatelessWidget {
+class _SummaryRow extends StatelessWidget {
   final String label, value;
   final bool bold;
-  const _Row(this.label, this.value, {this.bold = false});
+  const _SummaryRow(this.label, this.value, {this.bold = false});
   @override
   Widget build(BuildContext context) => Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -371,7 +370,8 @@ class _EmptyCartView extends StatelessWidget {
       const Icon(Icons.shopping_cart_outlined, size: 100, color: AppColors.textHint),
       const SizedBox(height: 24),
       const Text('Your cart is empty',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary)),
       const SizedBox(height: 8),
       const Text('Add products to get started',
           style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
@@ -440,20 +440,23 @@ class _CartItemCard extends StatelessWidget {
       Container(
         width: 60, height: 60,
         decoration: BoxDecoration(
-          color: AppColors.surfaceLight, borderRadius: BorderRadius.circular(10),
+          color: AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Icon(icon, size: 32, color: AppColors.primary),
       ),
       const SizedBox(width: 12),
       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(itemName, style: const TextStyle(
-            fontSize: 15, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+            fontSize: 15, fontWeight: FontWeight.bold,
+            color: AppColors.textPrimary)),
         const SizedBox(height: 4),
         Text('£${price.toStringAsFixed(2)} per $unit',
             style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
         const SizedBox(height: 8),
         Text('£${(price * quantity).toStringAsFixed(2)}',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.primary)),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
+                color: AppColors.primary)),
       ])),
       Column(children: [
         Row(children: [
@@ -462,14 +465,18 @@ class _CartItemCard extends StatelessWidget {
           SizedBox(width: 40, child: Center(child: Text('$quantity',
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary)))),
-          _QtyBtn(icon: Icons.add, bg: AppColors.primary, fg: AppColors.white, onTap: onIncrease),
+          _QtyBtn(icon: Icons.add, bg: AppColors.primary,
+              fg: AppColors.white, onTap: onIncrease),
         ]),
         const SizedBox(height: 8),
         TextButton(
           onPressed: onRemove,
-          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 0),
+          style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 0),
               tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-          child: const Text('Remove', style: TextStyle(fontSize: 12, color: AppColors.error)),
+          child: const Text('Remove',
+              style: TextStyle(fontSize: 12, color: AppColors.error)),
         ),
       ]),
     ]),

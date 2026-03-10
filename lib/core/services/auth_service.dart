@@ -57,6 +57,12 @@ class ApiConstants {
   static const String catalogProducts         = '$baseUrl/api/catalog/products';
   static String catalogProductById(String id) => '$baseUrl/api/catalog/products/$id';
   static const String catalogFilters          = '$baseUrl/api/catalog/filters';
+
+  // ── Product Images (Supplier) ──────────────────────────
+  static String productImages(String productId) =>
+      '$baseUrl/api/products/$productId/images';
+  static String productImage(String productId, int imageId) =>
+      '$baseUrl/api/products/$productId/images/$imageId';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -270,69 +276,68 @@ class AuthService {
   }
 
   Future<AuthResult> uploadDriverDocument({
-  required String driverId,
-  required String documentType,
-  required List<int> fileBytes,
-  required String fileName,
-}) async {
-  try {
-    final uri = Uri.parse(
-        '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
+    required String driverId,
+    required String documentType,
+    required List<int> fileBytes,
+    required String fileName,
+  }) async {
+    try {
+      final uri = Uri.parse(
+          '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
 
-    debugPrint('║ UPLOAD DOC URL: $uri');
-    debugPrint('║ UPLOAD DOC fileName: $fileName');
-    debugPrint('║ UPLOAD DOC fileSize: ${fileBytes.length} bytes');
+      debugPrint('║ UPLOAD DOC URL: $uri');
+      debugPrint('║ UPLOAD DOC fileName: $fileName');
+      debugPrint('║ UPLOAD DOC fileSize: ${fileBytes.length} bytes');
 
-    final request = http.MultipartRequest('POST', uri);
-    final token = await getAccessToken();
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
-      request.headers['Accept'] = 'application/json';
+      final request = http.MultipartRequest('POST', uri);
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+
+      final ext = fileName.split('.').last.toLowerCase();
+      String mimeType;
+      String mimeSubtype;
+      switch (ext) {
+        case 'jpg':
+        case 'jpeg':
+          mimeType = 'image'; mimeSubtype = 'jpeg'; break;
+        case 'png':
+          mimeType = 'image'; mimeSubtype = 'png'; break;
+        case 'pdf':
+          mimeType = 'application'; mimeSubtype = 'pdf'; break;
+        default:
+          mimeType = 'image'; mimeSubtype = 'jpeg';
+      }
+
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          fileBytes,
+          filename: fileName,
+          contentType: MediaType(mimeType, mimeSubtype),
+        ),
+      );
+
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+
+      debugPrint('║ UPLOAD DOC STATUS: ${response.statusCode}');
+      debugPrint('║ UPLOAD DOC RESPONSE BODY: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return const AuthResult(success: true);
+      }
+      return AuthResult(
+        success: false,
+        message: _errorMessage(_safeJsonDecode(response.body), response.statusCode),
+      );
+    } on Exception catch (e) {
+      debugPrint('║ UPLOAD DOC EXCEPTION: $e');
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
-
-    // Detect MIME type from file extension
-    final ext = fileName.split('.').last.toLowerCase();
-    String mimeType;
-    String mimeSubtype;
-    switch (ext) {
-      case 'jpg':
-      case 'jpeg':
-        mimeType = 'image'; mimeSubtype = 'jpeg'; break;
-      case 'png':
-        mimeType = 'image'; mimeSubtype = 'png'; break;
-      case 'pdf':
-        mimeType = 'application'; mimeSubtype = 'pdf'; break;
-      default:
-        mimeType = 'image'; mimeSubtype = 'jpeg';
-    }
-
-    request.files.add(
-      http.MultipartFile.fromBytes(
-        'file',
-        fileBytes,
-        filename: fileName,
-        contentType: MediaType(mimeType, mimeSubtype),
-      ),
-    );
-
-    final streamed = await request.send().timeout(const Duration(seconds: 60));
-    final response = await http.Response.fromStream(streamed);
-
-    debugPrint('║ UPLOAD DOC STATUS: ${response.statusCode}');
-    debugPrint('║ UPLOAD DOC RESPONSE BODY: ${response.body}');
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return const AuthResult(success: true);
-    }
-    return AuthResult(
-      success: false,
-      message: _errorMessage(_safeJsonDecode(response.body), response.statusCode),
-    );
-  } on Exception catch (e) {
-    debugPrint('║ UPLOAD DOC EXCEPTION: $e');
-    return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
   }
-}
 
   Future<AuthResult> login({
     required String email,
@@ -1135,6 +1140,95 @@ class AuthService {
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  PRODUCT IMAGES (Supplier)
+  // ══════════════════════════════════════════════════════
+
+  /// POST /api/products/{productId}/images
+  /// Uploads an image for a product. Set [isPrimary] = true to make it
+  /// the main display image.
+  Future<ApiResult<Map<String, dynamic>>> uploadProductImage({
+    required String productId,
+    required List<int> fileBytes,
+    required String fileName,
+    String? altText,
+    bool isPrimary = false,
+  }) async {
+    try {
+      final queryParams = <String, String>{
+        'isPrimary': isPrimary.toString(),
+        if (altText != null && altText.isNotEmpty) 'altText': altText,
+      };
+      final uri = Uri.parse(ApiConstants.productImages(productId))
+          .replace(queryParameters: queryParams);
+
+      _log('UPLOAD PRODUCT IMAGE REQUEST', uri.toString(),
+          extra: 'fileName: $fileName | isPrimary: $isPrimary');
+
+      final request = http.MultipartRequest('POST', uri);
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+
+      final ext = fileName.split('.').last.toLowerCase();
+      String mimeSubtype;
+      switch (ext) {
+        case 'png':  mimeSubtype = 'png';  break;
+        case 'gif':  mimeSubtype = 'gif';  break;
+        case 'webp': mimeSubtype = 'webp'; break;
+        default:     mimeSubtype = 'jpeg';
+      }
+
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          fileBytes,
+          filename: fileName,
+          contentType: MediaType('image', mimeSubtype),
+        ),
+      );
+
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+
+      _log('UPLOAD PRODUCT IMAGE RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// DELETE /api/products/{productId}/images/{imageId}
+  Future<ApiResult<void>> deleteProductImage({
+    required String productId,
+    required int imageId,
+  }) async {
+    try {
+      final url = ApiConstants.productImage(productId, imageId);
+      _log('DELETE PRODUCT IMAGE REQUEST', url);
+      final response = await http
+          .delete(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('DELETE PRODUCT IMAGE RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return const ApiResult(success: true);
       }
       return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));

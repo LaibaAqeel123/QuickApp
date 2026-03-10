@@ -9,10 +9,15 @@ class CategoryProductsScreen extends StatefulWidget {
   /// If null, ALL products will be returned (no category filter applied).
   final int? categoryId;
 
+  /// Passed down to ProductDetailScreen so VIEW CART snackbar
+  /// can switch to the Cart tab in BuyerMainScreen.
+  final VoidCallback? onViewCart;
+
   const CategoryProductsScreen({
     super.key,
     required this.category,
     this.categoryId,
+    this.onViewCart,
   });
 
   @override
@@ -577,8 +582,10 @@ class _CategoryProductsScreenState extends State<CategoryProductsScreen> {
                                 onTap: () => Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) =>
-                                        ProductDetailScreen(product: product),
+                                    builder: (_) => ProductDetailScreen(
+                                      product:    product,
+                                      onViewCart: widget.onViewCart,
+                                    ),
                                   ),
                                 ),
                                 onAddToCart: () => _addToCart(product),

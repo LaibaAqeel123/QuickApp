@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/theme/app_theme.dart';
-import 'package:food_delivery_app/presentation/auth/screens/login_screen.dart';
+import 'package:food_delivery_app/presentation/splash_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized(); // required before SharedPreferences
   runApp(const MyApp());
 }
 
@@ -15,7 +16,7 @@ class MyApp extends StatelessWidget {
       title: 'FoodSupply Pro',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: const LoginScreen(),
+      home: const SplashScreen(), // ← was LoginScreen, now SplashScreen
     );
   }
 }
