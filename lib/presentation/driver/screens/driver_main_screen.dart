@@ -1,5 +1,3 @@
-// lib/presentation/driver/screens/driver_main_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
@@ -10,10 +8,7 @@ import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.da
 import 'package:food_delivery_app/presentation/driver/screens/driver_profile_screen.dart';
 
 class DriverMainScreen extends StatefulWidget {
-  /// driverId passed from login screen after approval check.
-  /// If null, DriverMainScreen will try to load it from SharedPreferences.
   final String? driverId;
-
   const DriverMainScreen({super.key, this.driverId});
 
   @override
@@ -21,7 +16,7 @@ class DriverMainScreen extends StatefulWidget {
 }
 
 class _DriverMainScreenState extends State<DriverMainScreen> {
-  int _currentIndex = 0;
+  int     _currentIndex      = 0;
   String? _resolvedDriverId;
 
   @override
@@ -31,7 +26,6 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   }
 
   Future<void> _resolveDriverId() async {
-    // Use passed driverId or fall back to saved one
     final id = widget.driverId ??
         await AuthService.instance.getSavedDriverId();
     if (mounted) setState(() => _resolvedDriverId = id);
@@ -41,7 +35,7 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   Widget build(BuildContext context) {
     final screens = [
       DriverHomeScreen(driverId: _resolvedDriverId),
-      const AvailableJobsScreen(),
+      AvailableJobsScreen(driverId: _resolvedDriverId),   // ← FIX: was const AvailableJobsScreen()
       const ActiveDeliveryScreen(),
       const EarningsScreen(),
       const DriverProfileScreen(),
