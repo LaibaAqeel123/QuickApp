@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Clone frontend repo
         run: |
-          git clone --depth 1 https://github.com/LaibaAqeel123/QuickApp-web.git frontend-repo
+          git clone --depth 1 https://${{ secrets.FRONTEND_PAT }}@github.com/LaibaAqeel123/QuickApp-web.git frontend-repo
           echo "Cloned frontend repo contents:"
           ls -la frontend-repo/
 
