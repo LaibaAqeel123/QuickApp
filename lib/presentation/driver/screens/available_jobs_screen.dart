@@ -1,460 +1,645 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
-import 'package:food_delivery_app/presentation/driver/screens/job_detail_screen.dart';
+import 'package:food_delivery_app/core/services/auth_service.dart';
+import 'package:food_delivery_app/presentation/driver/screens/active_delivery_screen.dart';
 
 class AvailableJobsScreen extends StatefulWidget {
-  const AvailableJobsScreen({super.key});
+  /// driverId passed from DriverHomeScreen (or DriverMainScreen).
+  final String? driverId;
+  const AvailableJobsScreen({super.key, this.driverId});
 
   @override
   State<AvailableJobsScreen> createState() => _AvailableJobsScreenState();
 }
 
 class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
-  String _selectedSize = 'All';
-  String _selectedArea = 'All Areas';
+  // ── State ──────────────────────────────────────────────
+  List<Map<String, dynamic>> _jobs = [];
+  bool    _isLoading   = true;
+  String? _errorMsg;
+  String? _driverId;
 
-  final List<String> _sizes = ['All', 'Small', 'Medium', 'Large', 'Extra Large', 'Bulk'];
-  final List<String> _areas = ['All Areas', 'Central London', 'North London', 'South London', 'East London', 'West London'];
+  // ── Polling timer (every 30 seconds) ──────────────────
+  Timer? _pollTimer;
 
-  final List<Map<String, dynamic>> _jobs = [
-    {
-      'id': 'JOB1001',
-      'pickup': 'Premium Wholesale',
-      'pickupAddress': '123 Market St, London',
-      'delivery': 'The Italian Restaurant',
-      'deliveryAddress': '456 High St, London',
-      'distance': 3.5,
-      'payment': 12.50,
-      'size': 'Medium',
-      'time': '10:30 AM',
-      'area': 'Central London',
-      'items': 5,
-    },
-    {
-      'id': 'JOB1002',
-      'pickup': 'Fresh Meat Co.',
-      'pickupAddress': '789 Meat Lane, London',
-      'delivery': 'Burger House',
-      'deliveryAddress': '321 Food Ave, London',
-      'distance': 5.2,
-      'payment': 15.00,
-      'size': 'Large',
-      'time': '11:00 AM',
-      'area': 'North London',
-      'items': 8,
-    },
-    {
-      'id': 'JOB1003',
-      'pickup': 'Baker\'s Best',
-      'pickupAddress': '555 Bakery Rd, London',
-      'delivery': 'Cafe Delight',
-      'deliveryAddress': '888 Coffee St, London',
-      'distance': 2.1,
-      'payment': 8.50,
-      'size': 'Small',
-      'time': '09:45 AM',
-      'area': 'South London',
-      'items': 3,
-    },
-    {
-      'id': 'JOB1004',
-      'pickup': 'Dairy Farm Supplies',
-      'pickupAddress': '999 Milk Way, London',
-      'delivery': 'Pizza Corner',
-      'deliveryAddress': '111 Pizza Plaza, London',
-      'distance': 7.8,
-      'payment': 18.00,
-      'size': 'Extra Large',
-      'time': '12:15 PM',
-      'area': 'East London',
-      'items': 12,
-    },
-    {
-      'id': 'JOB1005',
-      'pickup': 'Wholesale Hub',
-      'pickupAddress': '222 Bulk St, London',
-      'delivery': 'SuperMart Chain',
-      'deliveryAddress': '333 Retail Rd, London',
-      'distance': 15.5,
-      'payment': 45.00,
-      'size': 'Bulk',
-      'time': 'Tomorrow 8:00 AM',
-      'area': 'West London',
-      'items': 25,
-    },
-  ];
+  // ── Per-card countdown timers ──────────────────────────
+  // Maps deliveryId → remaining seconds (updated every second)
+  final Map<String, int> _countdowns = {};
+  Timer? _countdownTimer;
 
-  List<Map<String, dynamic>> get _filteredJobs {
-    return _jobs.where((job) {
-      bool sizeMatch = _selectedSize == 'All' || job['size'] == _selectedSize;
-      bool areaMatch = _selectedArea == 'All Areas' || job['area'] == _selectedArea;
-      return sizeMatch && areaMatch;
-    }).toList();
+  @override
+  void initState() {
+    super.initState();
+    _init();
   }
 
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _init() async {
+    // Resolve driverId
+    _driverId = widget.driverId ??
+        await AuthService.instance.getSavedDriverId();
+
+    // Initial load
+    await _loadJobs();
+
+    // Poll every 30 seconds for new offers
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _loadJobs(silent: true),
+    );
+
+    // Tick countdown every second
+    _countdownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _tickCountdowns(),
+    );
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  LOAD JOBS — GET /api/Deliveries?status=2
+  // ══════════════════════════════════════════════════════
+  Future<void> _loadJobs({bool silent = false}) async {
+    if (!mounted) return;
+    if (!silent) setState(() { _isLoading = true; _errorMsg = null; });
+
+    final result = await AuthService.instance.getDeliveries(status: 2);
+    if (!mounted) return;
+
+    if (result.success && result.data != null) {
+      // Filter: only show cards assigned to THIS driver
+      final all = result.data!
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+      final filtered = _driverId != null
+          ? all.where((d) {
+              final id = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+              return id == _driverId;
+            }).toList()
+          : all;
+
+      // Rebuild countdowns for new deliveries
+      final Map<String, int> newCountdowns = {};
+      for (final job in filtered) {
+        final id = _jobId(job);
+        final expires = _parseExpiry(job['expiresAt']?.toString());
+        if (expires != null) {
+          final remaining =
+              expires.difference(DateTime.now().toUtc()).inSeconds;
+          newCountdowns[id] = remaining > 0 ? remaining : 0;
+        } else {
+          newCountdowns[id] = _countdowns[id] ?? 0;
+        }
+      }
+
+      setState(() {
+        _jobs     = filtered;
+        _isLoading = false;
+        _countdowns
+          ..clear()
+          ..addAll(newCountdowns);
+      });
+    } else {
+      setState(() {
+        _isLoading = false;
+        _errorMsg  = result.message ?? 'Failed to load jobs.';
+      });
+    }
+  }
+
+  // ── Countdown ticker ───────────────────────────────────
+  void _tickCountdowns() {
+    if (!mounted) return;
+    setState(() {
+      for (final key in _countdowns.keys.toList()) {
+        if (_countdowns[key]! > 0) _countdowns[key] = _countdowns[key]! - 1;
+      }
+    });
+  }
+
+  // ── Field helpers ──────────────────────────────────────
+  String _jobId(Map<String, dynamic> j) =>
+      (j['deliveryId'] ?? j['id'] ?? '').toString();
+
+  DateTime? _parseExpiry(String? s) {
+    if (s == null || s.isEmpty) return null;
+    try { return DateTime.parse(s).toUtc(); } catch (_) { return null; }
+  }
+
+  bool _isExpired(Map<String, dynamic> job) {
+    final id  = _jobId(job);
+    final secs = _countdowns[id] ?? 0;
+    return secs <= 0;
+  }
+
+  String _formatCountdown(Map<String, dynamic> job) {
+    final id   = _jobId(job);
+    final secs = _countdowns[id] ?? 0;
+    if (secs <= 0) return 'Expired';
+    final m = secs ~/ 60;
+    final s = secs % 60;
+    return 'Expires in ${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  ACCEPT — POST /api/Drivers/{driverId}/deliveries/{deliveryId}/accept
+  // ══════════════════════════════════════════════════════
+  Future<void> _acceptJob(Map<String, dynamic> job) async {
+    if (_driverId == null) {
+      _snack('Driver ID missing. Please log out and back in.', isError: true);
+      return;
+    }
+    if (_isExpired(job)) {
+      _snack('This offer has expired.', isError: true);
+      return;
+    }
+
+    final delivId = _jobId(job);
+    _setJobLoading(delivId, true);
+
+    final result = await AuthService.instance.acceptDelivery(
+      driverId: _driverId!,
+      deliveryId: delivId,
+    );
+    if (!mounted) return;
+    _setJobLoading(delivId, false);
+
+    if (result.success) {
+      _snack('Delivery accepted! Head to the pickup point. 🚗');
+      // Remove from list and navigate to active delivery
+      setState(() => _jobs.removeWhere((j) => _jobId(j) == delivId));
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ActiveDeliveryScreen(delivery: job),
+        ),
+      );
+    } else {
+      _snack(result.message ?? 'Failed to accept. Try again.', isError: true);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  REJECT — POST /api/Drivers/{driverId}/deliveries/{deliveryId}/reject
+  // ══════════════════════════════════════════════════════
+  void _promptReject(Map<String, dynamic> job) {
+    String?        _selectedReason;
+    String         _otherText = '';
+    bool           _isRejecting = false;
+    final reasons   = ['Too far away', 'Vehicle issue', 'Too busy', 'Other'];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setBS) => Padding(
+          padding: EdgeInsets.only(
+            left: 20, right: 20, top: 20,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 16),
+            const Text('Reason for Rejection',
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary)),
+            const SizedBox(height: 16),
+            ...reasons.map((r) => RadioListTile<String>(
+              value: r,
+              groupValue: _selectedReason,
+              title: Text(r),
+              activeColor: AppColors.primary,
+              onChanged: (v) => setBS(() => _selectedReason = v),
+            )),
+            if (_selectedReason == 'Other') ...[
+              const SizedBox(height: 8),
+              TextField(
+                decoration: const InputDecoration(
+                  labelText: 'Please describe...',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) => _otherText = v,
+                maxLines: 2,
+              ),
+            ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity, height: 52,
+              child: ElevatedButton(
+                onPressed: _isRejecting || _selectedReason == null
+                    ? null
+                    : () async {
+                        setBS(() => _isRejecting = true);
+                        final reason = _selectedReason == 'Other'
+                            ? (_otherText.trim().isNotEmpty
+                                ? _otherText.trim()
+                                : 'Other')
+                            : _selectedReason!;
+                        Navigator.of(ctx).pop();
+                        await _doReject(job, reason);
+                      },
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error),
+                child: _isRejecting
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('Confirm Reject',
+                        style: TextStyle(fontSize: 16)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _doReject(Map<String, dynamic> job, String reason) async {
+    if (_driverId == null) return;
+    final delivId = _jobId(job);
+    _setJobLoading(delivId, true);
+
+    final result = await AuthService.instance.rejectDelivery(
+      driverId:   _driverId!,
+      deliveryId: delivId,
+      reason:     reason,
+    );
+    if (!mounted) return;
+    _setJobLoading(delivId, false);
+
+    if (result.success) {
+      setState(() => _jobs.removeWhere((j) => _jobId(j) == delivId));
+      _snack('Delivery rejected. It will be reassigned.');
+    } else {
+      _snack(result.message ?? 'Failed to reject. Try again.', isError: true);
+    }
+  }
+
+  // ── Per-card loading state ─────────────────────────────
+  final Set<String> _loadingCards = {};
+  void _setJobLoading(String id, bool v) {
+    if (!mounted) return;
+    setState(() => v ? _loadingCards.add(id) : _loadingCards.remove(id));
+  }
+
+  void _snack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? AppColors.error : AppColors.success,
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('Available Jobs'),
+        title: Text('Available Jobs (${_jobs.length})'),
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.map),
-            onPressed: () {},
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _loadJobs(),
+            tooltip: 'Refresh',
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Filters
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: AppColors.surface,
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _selectedSize,
-                        decoration: const InputDecoration(
-                          labelText: 'Size',  // FIXED: Shortened from 'Delivery Size'
-                          prefixIcon: Icon(Icons.scale),
-                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          isDense: true,  // FIXED: Added to reduce height
-                        ),
-                        isExpanded: true,  // FIXED: Added to prevent overflow
-                        items: _sizes.map((size) {
-                          return DropdownMenuItem(
-                            value: size,
-                            child: Text(
-                              size,
-                              overflow: TextOverflow.ellipsis,  // FIXED: Added overflow handling
-                            ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _errorMsg != null
+              ? _ErrorView(message: _errorMsg!, onRetry: _loadJobs)
+              : _jobs.isEmpty
+                  ? _EmptyView(onRefresh: _loadJobs)
+                  : RefreshIndicator(
+                      onRefresh: _loadJobs,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _jobs.length,
+                        itemBuilder: (_, i) {
+                          final job   = _jobs[i];
+                          final id    = _jobId(job);
+                          final busy  = _loadingCards.contains(id);
+                          final expired = _isExpired(job);
+                          return _JobCard(
+                            job:           job,
+                            countdown:     _formatCountdown(job),
+                            isExpired:     expired,
+                            isLoading:     busy,
+                            onAccept:      expired || busy
+                                ? null
+                                : () => _acceptJob(job),
+                            onReject:      busy
+                                ? null
+                                : () => _promptReject(job),
                           );
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedSize = value!;
-                          });
                         },
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _selectedArea,
-                        decoration: const InputDecoration(
-                          labelText: 'Area',
-                          prefixIcon: Icon(Icons.location_on),
-                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          isDense: true,  // FIXED: Added to reduce height
-                        ),
-                        isExpanded: true,  // FIXED: Added to prevent overflow
-                        items: _areas.map((area) {
-                          return DropdownMenuItem(
-                            value: area,
-                            child: Text(
-                              area,
-                              overflow: TextOverflow.ellipsis,  // FIXED: Added overflow handling
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedArea = value!;
-                          });
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          // Results Count
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            color: AppColors.surfaceLight,
-            width: double.infinity,
-            child: Text(
-              '${_filteredJobs.length} jobs available',
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ),
-
-          // Jobs List
-          Expanded(
-            child: _filteredJobs.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.work_off,
-                    size: 80,
-                    color: AppColors.textHint,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'No jobs available',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Try changing your filters',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.textHint,
-                    ),
-                  ),
-                ],
-              ),
-            )
-                : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _filteredJobs.length,
-              itemBuilder: (context, index) {
-                final job = _filteredJobs[index];
-                return _JobCard(
-                  job: job,
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => JobDetailScreen(
-                          jobId: job['id'] as String,  // FIXED: Added cast
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
 
+// ══════════════════════════════════════════════════════════
+//  JOB CARD
+// ══════════════════════════════════════════════════════════
 class _JobCard extends StatelessWidget {
   final Map<String, dynamic> job;
-  final VoidCallback onTap;
+  final String   countdown;
+  final bool     isExpired;
+  final bool     isLoading;
+  final VoidCallback? onAccept;
+  final VoidCallback? onReject;
 
-  const _JobCard({required this.job, required this.onTap});
+  const _JobCard({
+    required this.job,
+    required this.countdown,
+    required this.isExpired,
+    required this.isLoading,
+    required this.onAccept,
+    required this.onReject,
+  });
 
-  Color _getSizeColor(String size) {
-    switch (size) {
-      case 'Small':
-        return AppColors.success;
-      case 'Medium':
-        return AppColors.info;
-      case 'Large':
-        return AppColors.warning;
-      case 'Extra Large':
-        return AppColors.error;
-      case 'Bulk':
-        return AppColors.primaryDark;
-      default:
-        return AppColors.textSecondary;
-    }
-  }
+  String _str(String key, [String fallback = 'N/A']) =>
+      (job[key] ?? job[_camel(key)] ?? fallback).toString();
+
+  String _camel(String s) =>
+      s.replaceAllMapped(RegExp(r'_([a-z])'), (m) => m[1]!.toUpperCase());
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),  // FIXED: withValues
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
+    final orderNum     = _str('orderNumber', 'Order');
+    final pickup       = _str('pickupAddress');
+    final delivery     = _str('deliveryAddress');
+    final distRaw      = job['distanceKm'] ?? job['distance_km'] ?? job['distance'];
+    final distance     = distRaw != null
+        ? '${(distRaw as num).toStringAsFixed(1)} km'
+        : 'N/A';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isExpired ? AppColors.error.withOpacity(0.4) : AppColors.border,
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  job['id'] as String,  // FIXED: Added cast
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05),
+              blurRadius: 8, offset: const Offset(0, 2))
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // ── Card header: order number + countdown ──
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: isExpired
+                ? AppColors.error.withOpacity(0.08)
+                : AppColors.primary.withOpacity(0.06),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          child: Row(children: [
+            Expanded(
+              child: Text(orderNum,
                   style: const TextStyle(
-                    fontSize: 16,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+            ),
+            // Countdown chip
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: isExpired
+                    ? AppColors.error
+                    : AppColors.warning.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(
+                  isExpired ? Icons.timer_off : Icons.timer_outlined,
+                  size: 14,
+                  color: isExpired ? Colors.white : AppColors.warning,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  countdown,
+                  style: TextStyle(
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
+                    color: isExpired ? Colors.white : AppColors.warning,
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: _getSizeColor(job['size'] as String).withValues(alpha: 0.1),  // FIXED: withValues and cast
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    job['size'] as String,  // FIXED: Added cast
-                    style: TextStyle(
-                      fontSize: 12,
+              ]),
+            ),
+          ]),
+        ),
+
+        // ── Addresses ─────────────────────────────
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(children: [
+            _AddressRow(
+              icon: Icons.store,
+              color: AppColors.primary,
+              label: 'Pickup',
+              address: pickup,
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Row(children: [
+                SizedBox(width: 20),
+                Padding(
+                  padding: EdgeInsets.only(left: 2),
+                  child: Icon(Icons.arrow_downward,
+                      size: 14, color: AppColors.textHint),
+                ),
+              ]),
+            ),
+            _AddressRow(
+              icon: Icons.location_on,
+              color: AppColors.success,
+              label: 'Delivery',
+              address: delivery,
+            ),
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            Row(children: [
+              const Icon(Icons.route, size: 16, color: AppColors.textHint),
+              const SizedBox(width: 6),
+              Text(distance,
+                  style: const TextStyle(
+                      fontSize: 13,
                       fontWeight: FontWeight.w600,
-                      color: _getSizeColor(job['size'] as String),  // FIXED: Added cast
+                      color: AppColors.textPrimary)),
+            ]),
+          ]),
+        ),
+
+        // ── Accept / Reject buttons ────────────────
+        if (isLoading)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Row(children: [
+              // Reject
+              Expanded(
+                child: SizedBox(
+                  height: 48,
+                  child: OutlinedButton(
+                    onPressed: onReject,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.error,
+                      side: const BorderSide(color: AppColors.error),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Reject',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Accept
+              Expanded(
+                flex: 2,
+                child: SizedBox(
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: onAccept,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isExpired
+                          ? AppColors.border
+                          : AppColors.success,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text(
+                      isExpired ? 'Offer Expired' : 'Accept',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15),
                     ),
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            // Pickup
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),  // FIXED: withValues
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Icon(Icons.store, size: 16, color: AppColors.primary),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Pickup',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textHint,
-                        ),
-                      ),
-                      Text(
-                        job['pickup'] as String,  // FIXED: Added cast
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
-                        ),
-                        maxLines: 1,  // FIXED: Added
-                        overflow: TextOverflow.ellipsis,  // FIXED: Added
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            // Delivery
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withValues(alpha: 0.1),  // FIXED: withValues
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Icon(Icons.location_on, size: 16, color: AppColors.success),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Delivery',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textHint,
-                        ),
-                      ),
-                      Text(
-                        job['delivery'] as String,  // FIXED: Added cast
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
-                        ),
-                        maxLines: 1,  // FIXED: Added
-                        overflow: TextOverflow.ellipsis,  // FIXED: Added
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-
-            // Bottom Info
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Flexible(  // FIXED: Wrapped with Flexible
-                  child: Row(
-                    children: [
-                      const Icon(Icons.route, size: 16, color: AppColors.textHint),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${job['distance']} km',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      const Icon(Icons.access_time, size: 16, color: AppColors.textHint),
-                      const SizedBox(width: 4),
-                      Flexible(  // FIXED: Wrapped with Flexible
-                        child: Text(
-                          job['time'] as String,  // FIXED: Added cast
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textSecondary,
-                          ),
-                          overflow: TextOverflow.ellipsis,  // FIXED: Added
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),  // FIXED: Added spacing
-                Text(
-                  '£${(job['payment'] as num).toStringAsFixed(2)}',  // FIXED: Added cast
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.success,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+              ),
+            ]),
+          ),
+      ]),
     );
   }
+}
+
+class _AddressRow extends StatelessWidget {
+  final IconData icon;
+  final Color    color;
+  final String   label, address;
+  const _AddressRow({required this.icon, required this.color,
+      required this.label, required this.address});
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Icon(icon, size: 16, color: color),
+      ),
+      const SizedBox(width: 10),
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(
+              fontSize: 11, color: AppColors.textHint)),
+          const SizedBox(height: 2),
+          Text(address, style: const TextStyle(
+              fontSize: 13, fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary)),
+        ]),
+      ),
+    ],
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+//  EMPTY & ERROR VIEWS
+// ══════════════════════════════════════════════════════════
+class _EmptyView extends StatelessWidget {
+  final VoidCallback onRefresh;
+  const _EmptyView({required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Icon(Icons.work_off, size: 80, color: AppColors.textHint),
+      const SizedBox(height: 16),
+      const Text('No jobs available',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600,
+              color: AppColors.textSecondary)),
+      const SizedBox(height: 8),
+      const Text('Pull down to refresh or wait for new offers',
+          style: TextStyle(fontSize: 14, color: AppColors.textHint)),
+      const SizedBox(height: 24),
+      ElevatedButton.icon(
+        onPressed: onRefresh,
+        icon: const Icon(Icons.refresh),
+        label: const Text('Refresh Now'),
+      ),
+    ]),
+  );
+}
+
+class _ErrorView extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _ErrorView({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        const Icon(Icons.error_outline, size: 60, color: AppColors.error),
+        const SizedBox(height: 16),
+        Text(message, textAlign: TextAlign.center,
+            style: const TextStyle(
+                fontSize: 15, color: AppColors.textSecondary)),
+        const SizedBox(height: 24),
+        ElevatedButton.icon(
+          onPressed: onRetry,
+          icon: const Icon(Icons.refresh),
+          label: const Text('Retry'),
+        ),
+      ]),
+    ),
+  );
 }
