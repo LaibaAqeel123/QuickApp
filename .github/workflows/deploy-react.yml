@@ -12,23 +12,37 @@ jobs:
   build-and-deploy-react:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout main (with frontend submodule)
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          submodules: recursive
+
+      - name: Init frontend submodule
+        run: |
+          git submodule status
+          if [ ! -f "frontend/QuickApp/Frontend/admin-portal/package.json" ]; then
+            echo "Frontend not populated, initializing submodule..."
+            git config submodule.frontend.url "https://github.com/${{ github.repository }}.git"
+            git submodule update --init frontend
+          fi
+          echo "Contents of frontend/:"
+          ls -la frontend/ 2>/dev/null || true
 
       - name: Resolve React app path
         id: app
         run: |
-          for dir in frontend/QuickApp/Frontend/admin-portal frontend/admin-portal frontend; do
+          for dir in frontend/QuickApp/Frontend/admin-portal frontend/admin-portal frontend/frontend/QuickApp/Frontend/admin-portal frontend; do
             if [ -f "$dir/package.json" ]; then
               echo "app_dir=$dir" >> $GITHUB_OUTPUT
               echo "Found at $dir"
               exit 0
             fi
           done
-          echo "No React app (package.json) found under frontend/" && exit 1
+          echo "No React app (package.json) found. frontend/ contents:"
+          ls -laR frontend/ 2>/dev/null || true
+          exit 1
 
       - name: Create production env file
         run: |
