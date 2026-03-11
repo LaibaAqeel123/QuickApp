@@ -1,6 +1,5 @@
-# Deploy React admin portal when pushing to main (monorepo).
-# GitHub only runs workflows from repo root – frontend/.github/workflows/ is not triggered from here.
-# Deploys dist contents to C:\inetpub\wwwroot\app.neptasolutions.co.uk so IIS serves index.html at site root.
+# Deploy React app to IIS on Windows Server.
+# Clones the frontend repo, builds, and SCPs dist contents to the IIS site folder.
 
 name: Deploy React App
 
@@ -12,36 +11,28 @@ jobs:
   build-and-deploy-react:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main (with frontend submodule)
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Init frontend submodule
+      - name: Clone frontend repo
         run: |
-          git submodule status
-          if [ ! -f "frontend/QuickApp/Frontend/admin-portal/package.json" ]; then
-            echo "Frontend not populated, initializing submodule..."
-            git config submodule.frontend.url "https://github.com/${{ github.repository }}.git"
-            git submodule update --init frontend
-          fi
-          echo "Contents of frontend/:"
-          ls -la frontend/ 2>/dev/null || true
+          git clone --depth 1 https://github.com/LaibaAqeel123/QuickApp-web.git frontend-repo
+          echo "Cloned frontend repo contents:"
+          ls -la frontend-repo/
 
-      - name: Resolve React app path
+      - name: Find React app
         id: app
         run: |
-          for dir in frontend/QuickApp/Frontend/admin-portal frontend/admin-portal frontend/frontend/QuickApp/Frontend/admin-portal frontend; do
+          for dir in \
+            frontend-repo/QuickApp/Frontend/admin-portal \
+            frontend-repo/Frontend/admin-portal \
+            frontend-repo/admin-portal \
+            frontend-repo; do
             if [ -f "$dir/package.json" ]; then
               echo "app_dir=$dir" >> $GITHUB_OUTPUT
-              echo "Found at $dir"
+              echo "Found React app at: $dir"
               exit 0
             fi
           done
-          echo "No React app (package.json) found. frontend/ contents:"
-          ls -laR frontend/ 2>/dev/null || true
+          echo "Could not find package.json. Full tree:"
+          find frontend-repo -maxdepth 4 -name package.json ! -path '*/node_modules/*'
           exit 1
 
       - name: Create production env file
@@ -49,65 +40,56 @@ jobs:
           APP_DIR="${{ steps.app.outputs.app_dir }}"
           echo "VITE_API_URL=https://api.neptasolutions.co.uk/api/v1" > "$APP_DIR/.env.production"
           echo "VITE_APP_NAME=QuickApp Admin" >> "$APP_DIR/.env.production"
-          echo "Created .env.production:"
           cat "$APP_DIR/.env.production"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
         run: |
           cd ${{ steps.app.outputs.app_dir }}
           npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 
-      - name: Build React app
+      - name: Build
         run: |
           cd ${{ steps.app.outputs.app_dir }}
           npm run build
 
-      - name: Verify build output
+      - name: Prepare deploy folder
         run: |
           APP_DIR="${{ steps.app.outputs.app_dir }}"
+          mkdir -p deploy
           if [ -d "$APP_DIR/dist" ]; then
-            echo "Build output (dist):"
-            ls -la "$APP_DIR/dist/"
+            cp -r "$APP_DIR/dist/"* deploy/
+          elif [ -d "$APP_DIR/build" ]; then
+            cp -r "$APP_DIR/build/"* deploy/
           else
-            echo "ERROR: dist/ not found (Vite default). Check build script."
+            echo "No dist/ or build/ found after build"
             exit 1
           fi
+          echo "Files to deploy:"
+          ls -la deploy/
 
-      # Copy dist contents to a single folder so deploy puts index.html at site root (no nested folders)
-      - name: Prepare deploy artifact (dist contents only)
-        run: |
-          APP_DIR="${{ steps.app.outputs.app_dir }}"
-          mkdir -p react-deploy
-          cp -r "$APP_DIR/dist/"* react-deploy/
-          echo "Deploy artifact contents:"
-          ls -la react-deploy/
-
-      - name: Deploy React app to IIS (app.neptasolutions.co.uk)
+      - name: Deploy to IIS folder
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USERNAME }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          source: "react-deploy"
+          source: "deploy/*"
           target: "/c/inetpub/wwwroot/app.neptasolutions.co.uk"
           strip_components: 1
-          tar_dereference: true
           overwrite: true
 
-      - name: Restart IIS site (app.neptasolutions.co.uk)
+      - name: Restart IIS site
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USERNAME }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          script_stderr: true
           script: |
-            powershell.exe -Command "Import-Module WebAdministration; $siteName = '${{ secrets.IIS_SITE_NAME }}'; if ([string]::IsNullOrEmpty($siteName)) { $siteName = 'app.neptasolutions.co.uk' }; Stop-WebSite -Name $siteName -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Start-WebSite -Name $siteName -ErrorAction SilentlyContinue"
+            powershell.exe -Command "Import-Module WebAdministration; Stop-WebSite -Name 'app.neptasolutions.co.uk' -ErrorAction SilentlyContinue; Start-Sleep 2; Start-WebSite -Name 'app.neptasolutions.co.uk' -ErrorAction SilentlyContinue"
