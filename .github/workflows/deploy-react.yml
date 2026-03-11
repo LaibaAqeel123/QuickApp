@@ -11,15 +11,18 @@ jobs:
   build-and-deploy-react:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone frontend repo
-        run: |
-          git clone --depth 1 https://${{ secrets.FRONTEND_PAT }}@github.com/LaibaAqeel123/QuickApp-web.git frontend-repo
-          echo "Cloned frontend repo contents:"
-          ls -la frontend-repo/
+      - name: Checkout frontend repo
+        uses: actions/checkout@v4
+        with:
+          repository: LaibaAqeel123/QuickApp-web
+          token: ${{ secrets.FRONTEND_PAT }}
+          path: frontend-repo
 
       - name: Find React app
         id: app
         run: |
+          echo "Frontend repo contents:"
+          ls -la frontend-repo/
           for dir in \
             frontend-repo/QuickApp/Frontend/admin-portal \
             frontend-repo/Frontend/admin-portal \
