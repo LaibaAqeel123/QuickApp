@@ -80,11 +80,11 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
 
       final filtered = _driverId != null
           ? all.where((d) {
-              final id = (d['driverId'] ?? d['driver_id'] ?? '').toString();
-              return id == _driverId;
-            }).toList()
+        final id = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+        final status = (d['deliveryStatus'] ?? '').toString().toLowerCase();
+        return id == _driverId && status != 'failed' && status != 'delivered';
+      }).toList()
           : all;
-
       // Rebuild countdowns for new deliveries
       final Map<String, int> newCountdowns = {};
       for (final job in filtered) {
@@ -95,7 +95,7 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
               expires.difference(DateTime.now().toUtc()).inSeconds;
           newCountdowns[id] = remaining > 0 ? remaining : 0;
         } else {
-          newCountdowns[id] = _countdowns[id] ?? 0;
+          newCountdowns[id] = _countdowns[id] ?? 600;
         }
       }
 
