@@ -7,6 +7,10 @@ import 'package:food_delivery_app/presentation/driver/screens/active_delivery_sc
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
 import 'package:food_delivery_app/presentation/driver/screens/driver_profile_screen.dart';
 
+/// DriverMainScreen — root scaffold with bottom nav.
+///
+/// Resolves driverId once and passes it down to every child screen
+/// so they don't each have to look it up independently.
 class DriverMainScreen extends StatefulWidget {
   final String? driverId;
   const DriverMainScreen({super.key, this.driverId});
@@ -16,8 +20,9 @@ class DriverMainScreen extends StatefulWidget {
 }
 
 class _DriverMainScreenState extends State<DriverMainScreen> {
-  int     _currentIndex      = 0;
+  int     _currentIndex    = 0;
   String? _resolvedDriverId;
+  bool    _isResolving     = true;
 
   @override
   void initState() {
@@ -28,21 +33,58 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
   Future<void> _resolveDriverId() async {
     final id = widget.driverId ??
         await AuthService.instance.getSavedDriverId();
-    if (mounted) setState(() => _resolvedDriverId = id);
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  DRIVER MAIN — resolveDriverId');
+    debugPrint('║  widget.driverId  : ${widget.driverId}');
+    debugPrint('║  SharedPrefs id   : ${await AuthService.instance.getSavedDriverId()}');
+    debugPrint('║  resolved final   : $id');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    if (mounted) {
+      setState(() {
+        _resolvedDriverId = id;
+        _isResolving      = false;
+      });
+    }
   }
 
+  // ══════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    final screens = [
-      DriverHomeScreen(driverId: _resolvedDriverId),
-      AvailableJobsScreen(driverId: _resolvedDriverId),   // ← FIX: was const AvailableJobsScreen()
-      const ActiveDeliveryScreen(),
-      const EarningsScreen(),
-      const DriverProfileScreen(),
-    ];
+    // Show a loader until driverId is resolved so child
+    // screens never start with a null ID.
+    if (_isResolving) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
+    // Build screens lazily — IndexedStack keeps them alive
+    // while preserving scroll position when switching tabs.
     return Scaffold(
-      body: screens[_currentIndex],
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          // 0 — Home
+          DriverHomeScreen(driverId: _resolvedDriverId),
+
+          // 1 — Available Jobs
+          AvailableJobsScreen(driverId: _resolvedDriverId),
+
+          // 2 — Active Delivery (no active job yet when opened from nav)
+          ActiveDeliveryScreen(driverId: _resolvedDriverId),
+
+          // 3 — Earnings
+          EarningsScreen(driverId: _resolvedDriverId),
+
+          // 4 — Profile
+          // Stats is accessible via the "Full Stats" button on the Home tab
+          const DriverProfileScreen(),
+        ],
+      ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           boxShadow: [
@@ -55,12 +97,16 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          type: BottomNavigationBarType.fixed,
-          selectedItemColor: AppColors.primary,
-          unselectedItemColor: AppColors.textSecondary,
-          selectedFontSize: 12,
-          unselectedFontSize: 12,
+          onTap: (index) {
+            debugPrint(
+                '\n[NAV] Tab tapped: $index | driverId: $_resolvedDriverId');
+            setState(() => _currentIndex = index);
+          },
+          type:                  BottomNavigationBarType.fixed,
+          selectedItemColor:     AppColors.primary,
+          unselectedItemColor:   AppColors.textSecondary,
+          selectedFontSize:      12,
+          unselectedFontSize:    12,
           items: const [
             BottomNavigationBarItem(
               icon:       Icon(Icons.home_outlined),
