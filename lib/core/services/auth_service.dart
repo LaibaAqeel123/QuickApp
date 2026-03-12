@@ -24,6 +24,7 @@ class ApiConstants {
   static String driverStatus(String id)    => '$baseUrl/api/Drivers/$id/status';
   static String driverLocation(String id)  => '$baseUrl/api/Drivers/$id/location';
   static String driverUploadDoc(String id) => '$baseUrl/api/Drivers/$id/upload-document';
+  static String driverStats(String id)     => '$baseUrl/api/Drivers/$id/stats';
 
   // ── Cart ───────────────────────────────────────────────
   static const String cart          = '$baseUrl/api/cart';
@@ -63,6 +64,16 @@ class ApiConstants {
       '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/accept';
   static String rejectDelivery(String driverId, String deliveryId) =>
       '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/reject';
+  static String confirmPickup(String driverId, String deliveryId) =>
+      '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/pickup';
+  static String completeDelivery(String driverId, String deliveryId) =>
+      '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/complete';
+
+  // ── Earnings ───────────────────────────────────────────
+  static String earningsSummary(String driverId) =>
+      '$baseUrl/api/Earnings/drivers/$driverId/summary';
+  static String earningsByDateRange(String driverId) =>
+      '$baseUrl/api/Earnings/drivers/$driverId';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -111,6 +122,14 @@ class AuthService {
     return {
       'Content-Type': 'application/json',
       'Accept':       'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
+
+  Future<Map<String, String>> get _authHeadersNoContent async {
+    final token = await getAccessToken();
+    return {
+      'Accept': 'application/json',
       if (token != null) 'Authorization': 'Bearer $token',
     };
   }
@@ -420,8 +439,7 @@ class AuthService {
   Future<AuthResult> toggleDriverAvailability(String driverId) async {
     try {
       final url = ApiConstants.driverToggle(driverId);
-      _log('TOGGLE AVAILABILITY REQUEST', url,
-          extra: 'driverId: $driverId');
+      _log('TOGGLE AVAILABILITY REQUEST', url, extra: 'driverId: $driverId');
       final response = await http
           .patch(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
@@ -466,6 +484,26 @@ class AuthService {
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/Drivers/{driverId}/stats
+  Future<ApiResult<Map<String, dynamic>>> getDriverStats(String driverId) async {
+    try {
+      final url = ApiConstants.driverStats(driverId);
+      _log('GET DRIVER STATS REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DRIVER STATS RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -577,8 +615,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  ORDERS — BUYER
   // ══════════════════════════════════════════════════════
-
-  /// POST /api/orders/checkout
   Future<ApiResult<Map<String, dynamic>>> checkout({
     required String deliveryAddressId,
     String? billingAddressId,
@@ -610,7 +646,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/orders/my
   Future<ApiResult<Map<String, dynamic>>> getMyOrders({
     int? status,
     String? dateFrom,
@@ -642,7 +677,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/orders/my/{orderId}
   Future<ApiResult<Map<String, dynamic>>> getMyOrderById(String orderId) async {
     try {
       final url = ApiConstants.myOrderById(orderId);
@@ -662,7 +696,6 @@ class AuthService {
     }
   }
 
-  /// POST /api/orders/my/{orderId}/cancel
   Future<ApiResult<void>> cancelOrder({
     required String orderId,
     required String reason,
@@ -687,7 +720,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/orders/my/analytics
   Future<ApiResult<Map<String, dynamic>>> getMyOrdersAnalytics() async {
     try {
       _log('GET MY ORDERS ANALYTICS REQUEST', ApiConstants.myOrdersAnalytics);
@@ -710,8 +742,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  ORDERS — SUPPLIER
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/orders/supplier
   Future<ApiResult<Map<String, dynamic>>> getSupplierOrders({
     int? status,
     String? dateFrom,
@@ -744,7 +774,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/orders/supplier/{orderId}
   Future<ApiResult<Map<String, dynamic>>> getSupplierOrderById(
       String orderId) async {
     try {
@@ -765,7 +794,6 @@ class AuthService {
     }
   }
 
-  /// PATCH /api/orders/supplier/{orderId}/items/{orderItemId}/status
   Future<ApiResult<void>> updateSupplierOrderItemStatus({
     required String orderId,
     required String orderItemId,
@@ -773,8 +801,7 @@ class AuthService {
   }) async {
     try {
       final url = ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
-      _log('UPDATE ORDER ITEM STATUS REQUEST', url,
-          extra: 'status: $status');
+      _log('UPDATE ORDER ITEM STATUS REQUEST', url, extra: 'status: $status');
       final response = await http
           .patch(Uri.parse(url),
               headers: await _authHeaders,
@@ -792,7 +819,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/orders/supplier/analytics
   Future<ApiResult<Map<String, dynamic>>> getSupplierOrdersAnalytics({
     String? dateFrom,
     String? dateTo,
@@ -823,8 +849,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  CATEGORIES
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/categories
   Future<ApiResult<List<dynamic>>> getCategories({
     bool includeInactive = false,
     int? parentId,
@@ -858,7 +882,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/categories/{id}
   Future<ApiResult<Map<String, dynamic>>> getCategoryById(int id) async {
     try {
       final url = ApiConstants.categoryById(id);
@@ -878,8 +901,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  ADDRESSES
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/addresses
   Future<ApiResult<List<dynamic>>> getAddresses() async {
     try {
       _log('GET ADDRESSES REQUEST', ApiConstants.addresses);
@@ -904,7 +925,6 @@ class AuthService {
     }
   }
 
-  /// POST /api/addresses
   Future<ApiResult<Map<String, dynamic>>> createAddress({
     required String streetAddress,
     String? apartment,
@@ -943,7 +963,6 @@ class AuthService {
     }
   }
 
-  /// PUT /api/addresses/{id}
   Future<ApiResult<Map<String, dynamic>>> updateAddress({
     required String addressId,
     required String streetAddress,
@@ -983,7 +1002,6 @@ class AuthService {
     }
   }
 
-  /// DELETE /api/addresses/{id}
   Future<ApiResult<void>> deleteAddress(String addressId) async {
     try {
       final url = ApiConstants.addressById(addressId);
@@ -1003,7 +1021,6 @@ class AuthService {
     }
   }
 
-  /// PATCH /api/addresses/{id}/default
   Future<ApiResult<void>> setDefaultAddress(String addressId) async {
     try {
       final url = ApiConstants.addressDefault(addressId);
@@ -1026,8 +1043,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  CATALOG
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/catalog/products
   Future<ApiResult<Map<String, dynamic>>> getCatalogProducts({
     String? search,
     int?    categoryId,
@@ -1076,7 +1091,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/catalog/products/{id}
   Future<ApiResult<Map<String, dynamic>>> getCatalogProductById(
       String id) async {
     try {
@@ -1097,7 +1111,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/catalog/filters
   Future<ApiResult<Map<String, dynamic>>> getCatalogFilters() async {
     try {
       _log('GET CATALOG FILTERS REQUEST', ApiConstants.catalogFilters);
@@ -1121,10 +1134,7 @@ class AuthService {
   //  DELIVERIES (Driver)
   // ══════════════════════════════════════════════════════
 
-  /// GET /api/Deliveries
-  /// Gets all deliveries assigned to this driver.
-  /// The backend spec shows status=2 but returns 403 with query params —
-  /// so we fetch without params and filter by driverId on the frontend.
+  /// GET /api/Deliveries — with fallback attempts
   Future<ApiResult<List<dynamic>>> getDeliveries({int status = 2}) async {
     try {
       // ── Attempt 1: no query params (most permissive) ──
@@ -1140,7 +1150,7 @@ class AuthService {
         return _parseDeliveriesList(r1.body);
       }
 
-      // ── Attempt 2: ?status=2 (integer) ───────────────
+      // ── Attempt 2: ?status=N (integer) ───────────────
       final uriInt = Uri.parse(ApiConstants.deliveries)
           .replace(queryParameters: {'status': status.toString()});
       _log('GET DELIVERIES REQUEST (status int)', uriInt.toString());
@@ -1168,17 +1178,14 @@ class AuthService {
         return _parseDeliveriesList(r3.body);
       }
 
-      // All attempts failed — return the error from the last response
       return ApiResult(success: false,
-          message: _errorMessage(
-              _safeJsonDecode(r3.body), r3.statusCode));
+          message: _errorMessage(_safeJsonDecode(r3.body), r3.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false,
           message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  /// Parses a raw response body into a List of delivery maps.
   ApiResult<List<dynamic>> _parseDeliveriesList(String body) {
     final decoded = _safeJsonDecodeAny(body);
     if (decoded is List) return ApiResult(success: true, data: decoded);
@@ -1232,6 +1239,164 @@ class AuthService {
       _log('REJECT DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/pickup
+  /// multipart/form-data: photo (optional), notes (optional)
+  Future<ApiResult<Map<String, dynamic>>> confirmPickup({
+    required String driverId,
+    required String deliveryId,
+    List<int>? photoBytes,
+    String? photoFileName,
+    String? notes,
+  }) async {
+    try {
+      final url = ApiConstants.confirmPickup(driverId, deliveryId);
+      _log('CONFIRM PICKUP REQUEST', url,
+          extra: 'driverId: $driverId | deliveryId: $deliveryId');
+
+      final request = http.MultipartRequest('POST', Uri.parse(url));
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+      if (notes != null && notes.isNotEmpty) {
+        request.fields['notes'] = notes;
+      }
+      if (photoBytes != null && photoBytes.isNotEmpty) {
+        request.files.add(http.MultipartFile.fromBytes(
+          'photo', photoBytes,
+          filename: photoFileName ?? 'pickup_photo.jpg',
+        ));
+      }
+
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+      _log('CONFIRM PICKUP RESPONSE', url,
+          status: response.statusCode, body: response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/complete
+  /// multipart/form-data: recipientName (REQUIRED), photo (optional),
+  ///                       signature (optional), notes (optional)
+  Future<ApiResult<Map<String, dynamic>>> completeDelivery({
+    required String driverId,
+    required String deliveryId,
+    required String recipientName,
+    List<int>? photoBytes,
+    String? photoFileName,
+    List<int>? signatureBytes,
+    String? signatureFileName,
+    String? notes,
+  }) async {
+    try {
+      final url = ApiConstants.completeDelivery(driverId, deliveryId);
+      _log('COMPLETE DELIVERY REQUEST', url,
+          extra: 'recipientName: $recipientName');
+
+      final request = http.MultipartRequest('POST', Uri.parse(url));
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+
+      request.fields['recipientName'] = recipientName;
+      if (notes != null && notes.isNotEmpty) {
+        request.fields['notes'] = notes;
+      }
+      if (photoBytes != null && photoBytes.isNotEmpty) {
+        request.files.add(http.MultipartFile.fromBytes(
+          'photo', photoBytes,
+          filename: photoFileName ?? 'delivery_photo.jpg',
+        ));
+      }
+      if (signatureBytes != null && signatureBytes.isNotEmpty) {
+        request.files.add(http.MultipartFile.fromBytes(
+          'signature', signatureBytes,
+          filename: signatureFileName ?? 'signature.png',
+        ));
+      }
+
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+      _log('COMPLETE DELIVERY RESPONSE', url,
+          status: response.statusCode, body: response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  EARNINGS
+  // ══════════════════════════════════════════════════════
+
+  /// GET /api/Earnings/drivers/{driverId}/summary?period=week
+  /// period: 'day' | 'week' | 'month'
+  Future<ApiResult<Map<String, dynamic>>> getEarningsSummary({
+    required String driverId,
+    String period = 'week',
+  }) async {
+    try {
+      final uri = Uri.parse(ApiConstants.earningsSummary(driverId))
+          .replace(queryParameters: {'period': period});
+      _log('GET EARNINGS SUMMARY REQUEST', uri.toString(),
+          extra: 'driverId: $driverId | period: $period');
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET EARNINGS SUMMARY RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/Earnings/drivers/{driverId}?fromDate=...&toDate=...
+  Future<ApiResult<Map<String, dynamic>>> getEarningsByDateRange({
+    required String driverId,
+    required String fromDate,
+    required String toDate,
+  }) async {
+    try {
+      final uri = Uri.parse(ApiConstants.earningsByDateRange(driverId))
+          .replace(queryParameters: {'fromDate': fromDate, 'toDate': toDate});
+      _log('GET EARNINGS BY DATE RANGE REQUEST', uri.toString(),
+          extra: 'driverId: $driverId | from: $fromDate | to: $toDate');
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET EARNINGS BY DATE RANGE RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
       return ApiResult(success: false,

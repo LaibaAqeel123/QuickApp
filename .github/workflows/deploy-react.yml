@@ -1,0 +1,97 @@
+# Deploy React app to IIS on Windows Server.
+# Frontend code lives in a separate repo: LaibaAqeel123/QuickApp-web
+
+name: Deploy React App
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-and-deploy-react:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout frontend repo only
+        uses: actions/checkout@v4
+        with:
+          repository: LaibaAqeel123/QuickApp-web
+          token: ${{ secrets.FRONTEND_PAT }}
+
+      - name: Find React app
+        id: app
+        run: |
+          echo "Repo contents:"
+          ls -la
+          for dir in \
+            QuickApp/Frontend/admin-portal \
+            Frontend/admin-portal \
+            admin-portal \
+            .; do
+            if [ -f "$dir/package.json" ]; then
+              echo "app_dir=$dir" >> $GITHUB_OUTPUT
+              echo "Found React app at: $dir"
+              exit 0
+            fi
+          done
+          echo "Could not find package.json. Full tree:"
+          find . -maxdepth 4 -name package.json ! -path '*/node_modules/*'
+          exit 1
+
+      - name: Create production env file
+        run: |
+          APP_DIR="${{ steps.app.outputs.app_dir }}"
+          echo "VITE_API_URL=https://api.neptasolutions.co.uk/api/v1" > "$APP_DIR/.env.production"
+          echo "VITE_APP_NAME=QuickApp Admin" >> "$APP_DIR/.env.production"
+          cat "$APP_DIR/.env.production"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          cd ${{ steps.app.outputs.app_dir }}
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Build
+        run: |
+          cd ${{ steps.app.outputs.app_dir }}
+          npm run build
+
+      - name: Prepare deploy folder
+        run: |
+          APP_DIR="${{ steps.app.outputs.app_dir }}"
+          mkdir -p deploy
+          if [ -d "$APP_DIR/dist" ]; then
+            cp -r "$APP_DIR/dist/"* deploy/
+          elif [ -d "$APP_DIR/build" ]; then
+            cp -r "$APP_DIR/build/"* deploy/
+          else
+            echo "No dist/ or build/ found after build"
+            exit 1
+          fi
+          echo "Files to deploy:"
+          ls -la deploy/
+
+      - name: Deploy to IIS folder
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          source: "deploy/*"
+          target: "/c/inetpub/wwwroot/app.neptasolutions.co.uk"
+          strip_components: 1
+          overwrite: true
+
+      - name: Restart IIS site
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          script: |
+            powershell.exe -Command "Import-Module WebAdministration; Stop-WebSite -Name 'app.neptasolutions.co.uk' -ErrorAction SilentlyContinue; Start-Sleep 2; Start-WebSite -Name 'app.neptasolutions.co.uk' -ErrorAction SilentlyContinue"

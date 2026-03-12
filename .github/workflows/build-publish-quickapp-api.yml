@@ -1,0 +1,114 @@
+# Build, publish, and deploy QuickApp.Api (main API) – same output as manual release.
+# When pushing main repo: builds API and deploys to api.neptasolutions.co.uk/api
+
+name: Build and Publish QuickApp API
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  PUBLISH_OUTPUT: publish-api
+  SITE_NAME: api.neptasolutions.co.uk
+  API_TARGET_PATH: C:/inetpub/wwwroot/api.neptasolutions.co.uk/api
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve solution path (backend or backend/backend)
+        id: sln
+        run: |
+          if [ -f backend/backend/QuickApp.sln ]; then
+            echo "solution_path=backend/backend/QuickApp.sln" >> $GITHUB_OUTPUT
+            echo "project_path=backend/backend/QuickApp.Api/QuickApp.Api.csproj" >> $GITHUB_OUTPUT
+          elif [ -f backend/QuickApp.sln ]; then
+            echo "solution_path=backend/QuickApp.sln" >> $GITHUB_OUTPUT
+            echo "project_path=backend/QuickApp.Api/QuickApp.Api.csproj" >> $GITHUB_OUTPUT
+          else
+            echo "No solution found (check backend submodule or paths)" && exit 1
+          fi
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ${{ steps.sln.outputs.solution_path }}
+
+      - name: Build
+        run: dotnet build ${{ steps.sln.outputs.solution_path }} --configuration Release --no-restore
+
+      - name: Publish QuickApp.Api
+        run: |
+          dotnet publish ${{ steps.sln.outputs.project_path }} \
+            --configuration Release \
+            --output ${{ env.PUBLISH_OUTPUT }}
+
+      - name: List publish output
+        run: |
+          ls -la ${{ env.PUBLISH_OUTPUT }}/
+          test -f ${{ env.PUBLISH_OUTPUT }}/QuickApp.Api.dll && echo "QuickApp.Api.dll OK" || true
+          test -f ${{ env.PUBLISH_OUTPUT }}/web.config && echo "web.config OK" || true
+
+      - name: Upload QuickApp.Api artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickApp.Api-publish
+          path: ${{ env.PUBLISH_OUTPUT }}
+          retention-days: 30
+
+  deploy-api:
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: QuickApp.Api-publish
+          path: deploy-api
+
+      - name: Stop IIS before deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          script_stderr: true
+          script: |
+            powershell.exe -Command "Import-Module WebAdministration; Stop-WebSite -Name '${{ env.SITE_NAME }}'; $pool = (Get-Item \"IIS:\\Sites\\${{ env.SITE_NAME }}\").applicationPool; Stop-WebAppPool -Name $pool; Start-Sleep -Seconds 5"
+
+      - name: Deploy API to IIS
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          source: "deploy-api"
+          target: "${{ env.API_TARGET_PATH }}"
+          strip_components: 1
+          tar_dereference: true
+          overwrite: true
+
+      - name: Start IIS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          script_stderr: true
+          script: |
+            powershell.exe -Command "Import-Module WebAdministration; Start-WebAppPool -Name 'ApiAppPool'; Start-Sleep -Seconds 2; Start-WebSite -Name '${{ env.SITE_NAME }}'"

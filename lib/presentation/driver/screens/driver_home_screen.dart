@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/available_jobs_screen.dart';
+import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
+import 'package:food_delivery_app/presentation/driver/screens/driver_stats_screen.dart';
 
 class DriverHomeScreen extends StatefulWidget {
   final String? driverId;
@@ -12,20 +14,26 @@ class DriverHomeScreen extends StatefulWidget {
 }
 
 class _DriverHomeScreenState extends State<DriverHomeScreen> {
-  // ── State ──────────────────────────────────────────────
-  bool    _isLoadingProfile = true;
-  bool    _isOnline         = false;
-  bool    _isToggling       = false;
+  // ── Loading flags ──────────────────────────────────────
+  bool _isLoadingProfile = true;
+  bool _isLoadingStats   = false;
+  bool _isToggling       = false;
+  bool _isOnline         = false;
   String? _driverId;
 
-  // ── Profile fields from API ────────────────────────────
-  String _driverName     = 'Driver';
-  String _vehicleType    = 'N/A';
-  String _vehicleModel   = 'N/A';
-  String _licensePlate   = 'N/A';
-  double _rating         = 0.0;
-  double _totalEarnings  = 0.0;
+  // ── Profile fields (from GET /api/Drivers/{id}) ────────
+  String _driverName   = 'Driver';
+  String _vehicleType  = 'N/A';
+  String _vehicleModel = 'N/A';
+  String _licensePlate = 'N/A';
+  double _rating       = 0.0;
+
+  // ── Stats fields (from GET /api/Drivers/{id}/stats) ────
   int    _totalDeliveries = 0;
+  double _totalEarnings   = 0.0;
+  double _acceptanceRate  = 0.0;
+  int    _totalOffers     = 0;
+  bool   _statsLoaded     = false;
 
   @override
   void initState() {
@@ -34,56 +42,113 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   }
 
   // ══════════════════════════════════════════════════════
-  //  LOAD DRIVER PROFILE — GET /api/Drivers/{driverId}
+  //  LOAD ALL — profile + stats in parallel
   // ══════════════════════════════════════════════════════
   Future<void> _loadAll() async {
     if (!mounted) return;
-    setState(() => _isLoadingProfile = true);
+    setState(() { _isLoadingProfile = true; _statsLoaded = false; });
 
     // 1. Resolve driverId
     _driverId = widget.driverId ??
         await AuthService.instance.getSavedDriverId();
 
-    // 2. Fallback: decode from JWT sub if still null
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  DRIVER HOME — resolving driverId');
+    debugPrint('║  widget.driverId : ${widget.driverId}');
+    debugPrint('║  resolved        : $_driverId');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    // Fallback: decode from JWT /me if still null
     if (_driverId == null) {
+      debugPrint('║  driverId null — falling back to /api/auth/me');
       final profile = await AuthService.instance.getProfile();
+      debugPrint('║  /me success: ${profile.success} | data: ${profile.data}');
       if (profile.success && profile.data != null) {
-        _driverId = _extract(profile.data!, ['userId', 'id', 'sub']);
+        _driverId = _extract(profile.data!, ['userId', 'id', 'sub', 'driverId']);
+        debugPrint('║  driverId from /me: $_driverId');
       }
     }
 
-    // 3. Load driver profile
     if (_driverId != null) {
-      final result =
-          await AuthService.instance.getDriverProfile(_driverId!);
-      if (!mounted) return;
-      if (result.success && result.data != null) {
-        final d = result.data!;
-        setState(() {
-          _driverName      = _extract(d, ['fullName', 'name', 'firstName']) ?? 'Driver';
-          _vehicleType     = _extract(d, ['vehicleType', 'vehicle.type'])   ?? 'N/A';
-          _vehicleModel    = _extract(d, ['vehicleModel', 'vehicle.model'])  ?? 'N/A';
-          _licensePlate    = _extract(d, ['licensePlate', 'plate'])          ?? 'N/A';
-          _totalEarnings   = double.tryParse(
-                _extract(d, ['totalEarnings', 'earnings']) ?? '0') ?? 0.0;
-          _totalDeliveries = int.tryParse(
-                _extract(d, ['totalDeliveries', 'deliveries']) ?? '0') ?? 0;
-          _rating          = double.tryParse(
-                _extract(d, ['rating', 'averageRating']) ?? '0') ?? 0.0;
-
-          final status = _extract(d, [
-            'isAvailable', 'available', 'isOnline', 'online',
-          ]);
-          _isOnline = status == 'true' || status == '1' || status == 'online';
-        });
-      }
+      // Run profile + stats calls concurrently
+      await Future.wait([
+        _loadProfile(),
+        _loadStats(),
+      ]);
+    } else {
+      debugPrint('║  ⚠️  driverId still null — cannot load profile or stats');
     }
 
     if (mounted) setState(() => _isLoadingProfile = false);
   }
 
+  // ── GET /api/Drivers/{driverId} ────────────────────────
+  Future<void> _loadProfile() async {
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  LOAD PROFILE — GET /api/Drivers/$_driverId');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    final result = await AuthService.instance.getDriverProfile(_driverId!);
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  LOAD PROFILE RESULT');
+    debugPrint('║  success : ${result.success}');
+    debugPrint('║  message : ${result.message}');
+    debugPrint('║  data    : ${result.data}');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    if (!mounted || !result.success || result.data == null) return;
+    final d = result.data!;
+    setState(() {
+      _driverName  = _extract(d, ['fullName', 'name', 'firstName']) ?? 'Driver';
+      _vehicleType = _extract(d, ['vehicleType', 'vehicle.type'])   ?? 'N/A';
+      _vehicleModel= _extract(d, ['vehicleModel', 'vehicle.model']) ?? 'N/A';
+      _licensePlate= _extract(d, ['licensePlate', 'plate'])         ?? 'N/A';
+      _rating      = double.tryParse(
+          _extract(d, ['rating', 'averageRating']) ?? '0') ?? 0.0;
+      final status = _extract(d, [
+        'isAvailable', 'available', 'isOnline', 'online']);
+      _isOnline    = status == 'true' || status == '1' || status == 'online';
+    });
+  }
+
+  // ── GET /api/Drivers/{driverId}/stats ──────────────────
+  Future<void> _loadStats() async {
+    if (!mounted) return;
+    setState(() => _isLoadingStats = true);
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  LOAD STATS — GET /api/Drivers/$_driverId/stats');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    final result = await AuthService.instance.getDriverStats(_driverId!);
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  LOAD STATS RESULT');
+    debugPrint('║  success : ${result.success}');
+    debugPrint('║  message : ${result.message}');
+    debugPrint('║  data    : ${result.data}');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    if (!mounted) return;
+    setState(() => _isLoadingStats = false);
+
+    if (!result.success || result.data == null) return;
+    final d = result.data!;
+    setState(() {
+      _statsLoaded     = true;
+      _totalDeliveries = (d['totalDeliveries'] as num?)?.toInt()    ?? 0;
+      _totalEarnings   = (d['totalEarnings']   as num?)?.toDouble() ?? 0.0;
+      _acceptanceRate  = (d['acceptanceRate']  as num?)?.toDouble() ?? 0.0;
+      _totalOffers     = (d['totalOffers']     as num?)?.toInt()    ?? 0;
+      // Override rating from stats if available (more accurate)
+      final statRating = (d['rating'] as num?)?.toDouble();
+      if (statRating != null && statRating > 0) _rating = statRating;
+    });
+  }
+
   // ══════════════════════════════════════════════════════
-  //  TOGGLE AVAILABILITY — PATCH /api/Drivers/{id}/toggle-availability
+  //  TOGGLE AVAILABILITY
   // ══════════════════════════════════════════════════════
   Future<void> _toggleAvailability() async {
     if (_driverId == null) {
@@ -93,15 +158,28 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     }
     setState(() => _isToggling = true);
 
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  TOGGLE AVAILABILITY');
+    debugPrint('║  driverId : $_driverId');
+    debugPrint('║  current  : ${_isOnline ? "Online" : "Offline"}');
+    debugPrint('╚══════════════════════════════════════╝');
+
     final result =
         await AuthService.instance.toggleDriverAvailability(_driverId!);
-    if (!mounted) return;
 
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  TOGGLE RESULT');
+    debugPrint('║  success : ${result.success}');
+    debugPrint('║  message : ${result.message}');
+    debugPrint('║  data    : ${result.data}');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    if (!mounted) return;
     if (result.success) {
       final raw = result.data != null
-          ? _extract(result.data!, ['isAvailable', 'available'])
+          ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
           : null;
-      final newState = raw != null ? raw == 'true' : !_isOnline;
+      final newState = raw != null ? (raw == 'true') : !_isOnline;
       setState(() { _isOnline = newState; _isToggling = false; });
       _snack(_isOnline ? 'You\'re now Online 🟢' : 'You\'re now Offline 🔴');
     } else {
@@ -153,20 +231,39 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // ── Header ─────────────────────────
+                      // ── Header with toggle ──────────────
                       _buildHeader(),
 
-                      // ── Stats Row ──────────────────────
+                      // ── Quick Actions ───────────────────
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+                        child: _buildQuickActions(context),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // ── Stats row ───────────────────────
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('My Stats',
-                                style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.textPrimary)),
+                            Row(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('My Performance',
+                                    style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: AppColors.textPrimary)),
+                                if (_isLoadingStats)
+                                  const SizedBox(
+                                    width: 18, height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  ),
+                              ],
+                            ),
                             const SizedBox(height: 16),
                             Row(children: [
                               Expanded(child: _StatCard(
@@ -195,12 +292,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                               )),
                               const SizedBox(width: 12),
                               Expanded(child: _StatCard(
-                                icon:  Icons.verified,
-                                value: _isOnline ? 'Online' : 'Offline',
-                                label: 'Status',
-                                color: _isOnline
-                                    ? AppColors.success
-                                    : AppColors.error,
+                                icon:  Icons.trending_up,
+                                value: _statsLoaded
+                                    ? '${_acceptanceRate.toStringAsFixed(0)}%'
+                                    : 'N/A',
+                                label: 'Acceptance',
+                                color: AppColors.info,
                               )),
                             ]),
                           ],
@@ -208,7 +305,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                       ),
                       const SizedBox(height: 20),
 
-                      // ── Vehicle card ───────────────────
+                      // ── Vehicle card ────────────────────
                       Padding(
                         padding:
                             const EdgeInsets.symmetric(horizontal: 16),
@@ -251,31 +348,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 20),
-
-                      // ── View Available Jobs button ─────
-                      Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 16),
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: 56,
-                          child: ElevatedButton.icon(
-                            onPressed: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => AvailableJobsScreen(
-                                    driverId: _driverId),
-                              ),
-                            ),
-                            icon: const Icon(Icons.work),
-                            label: const Text('View Available Jobs',
-                                style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600)),
-                          ),
-                        ),
-                      ),
                       const SizedBox(height: 24),
                     ],
                   ),
@@ -285,7 +357,77 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     );
   }
 
-  // ── Header with online toggle ──────────────────────────
+  // ── Quick Actions row ──────────────────────────────────
+  Widget _buildQuickActions(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Quick Actions',
+            style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary)),
+        const SizedBox(height: 12),
+        // Available Jobs — primary CTA
+        SizedBox(
+          width: double.infinity, height: 56,
+          child: ElevatedButton.icon(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    AvailableJobsScreen(driverId: _driverId),
+              ),
+            ),
+            icon: const Icon(Icons.work),
+            label: const Text('View Available Jobs',
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w600)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        // Earnings + Stats side by side
+        Row(children: [
+          Expanded(
+            child: SizedBox(
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        EarningsScreen(driverId: _driverId),
+                  ),
+                ),
+                icon: const Icon(Icons.account_balance_wallet_outlined,
+                    size: 18),
+                label: const Text('Earnings'),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: SizedBox(
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        DriverStatsScreen(driverId: _driverId),
+                  ),
+                ),
+                icon: const Icon(Icons.bar_chart, size: 18),
+                label: const Text('Full Stats'),
+              ),
+            ),
+          ),
+        ]),
+      ],
+    );
+  }
+
+  // ── Header ─────────────────────────────────────────────
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -300,17 +442,22 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Hello, $_driverName! 👋',
-                  style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.white)),
-              const SizedBox(height: 4),
-              const Text('Ready for deliveries?',
-                  style: TextStyle(
-                      fontSize: 14, color: AppColors.white)),
-            ]),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Hello, $_driverName! 👋',
+                      style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.white)),
+                  const SizedBox(height: 4),
+                  const Text('Ready for deliveries?',
+                      style: TextStyle(
+                          fontSize: 14, color: AppColors.white)),
+                ],
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.notifications_outlined),
               color: AppColors.white,
@@ -320,7 +467,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         ),
         const SizedBox(height: 20),
 
-        // Online / Offline toggle
+        // Online/Offline toggle
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -361,7 +508,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           ),
         ),
 
-        // Rating strip
+        // Rating stars
         if (_rating > 0) ...[
           const SizedBox(height: 12),
           Row(children: [
@@ -378,6 +525,24 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                   fontSize: 14, color: AppColors.white),
             ),
           ]),
+        ],
+
+        // Total offers pill (from stats)
+        if (_statsLoaded && _totalOffers > 0) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              '$_totalOffers total offers received',
+              style: const TextStyle(
+                  fontSize: 13, color: AppColors.white),
+            ),
+          ),
         ],
       ]),
     );
