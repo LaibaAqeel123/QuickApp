@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:ui' as ui;
 
 // ── Delivery status constants ──────────────────────────────
 // 2=Assigned, 3=Accepted, 4=PickedUp, 6=Delivered
@@ -34,6 +38,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   Map<String, dynamic>? _activeDelivery;
   int     _step = 0; // 0=Accepted, 1=PickedUp, 2=Delivered
   Timer?  _pollTimer;
+  
+  // Image picker
+  final ImagePicker _picker = ImagePicker();
 
   static const _stepLabels = ['Heading to Pickup', 'Heading to Delivery', 'Delivered'];
 
@@ -146,11 +153,31 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   }
 
   // ══════════════════════════════════════════════════════
+  //  IMAGE PICKER HELPERS
+  // ══════════════════════════════════════════════════════
+  Future<XFile?> _pickImage(ImageSource source) async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: source,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
+      );
+      return image;
+    } catch (e) {
+      _snack('Error picking image: $e', isError: true);
+      return null;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
   //  CONFIRM PICKUP SHEET
   //  POST /api/Drivers/{driverId}/deliveries/{deliveryId}/pickup
   // ══════════════════════════════════════════════════════
   void _showPickupSheet() {
     String notes = '';
+    XFile? selectedPhoto;
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -170,26 +197,85 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             const Text('Confirm you have picked up the items.',
                 style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
             const SizedBox(height: 16),
-            SizedBox(width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {/* TODO: image_picker */},
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Take Photo (optional)'),
-              ),
+            
+            // Photo selection row
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final photo = await _pickImage(ImageSource.camera);
+                      setBS(() => selectedPhoto = photo);
+                    },
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Camera'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final photo = await _pickImage(ImageSource.gallery);
+                      setBS(() => selectedPhoto = photo);
+                    },
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Gallery'),
+                  ),
+                ),
+              ],
             ),
+            
+            // Show selected photo preview
+            if (selectedPhoto != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                height: 100,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                  image: DecorationImage(
+                    image: FileImage(File(selectedPhoto!.path)),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: () => setBS(() => selectedPhoto = null),
+                    icon: const Icon(Icons.close, size: 16),
+                    label: const Text('Remove'),
+                    style: TextButton.styleFrom(foregroundColor: AppColors.error),
+                  ),
+                ],
+              ),
+            ],
+            
             const SizedBox(height: 12),
             TextField(
-              decoration: const InputDecoration(labelText: 'Notes (optional)',
-                  hintText: 'e.g. Picked up from store', border: OutlineInputBorder()),
-              onChanged: (v) => notes = v, maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Notes (optional)',
+                hintText: 'e.g. Picked up from store',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (v) => notes = v,
+              maxLines: 2,
             ),
             const SizedBox(height: 16),
-            SizedBox(width: double.infinity, height: 52,
+            SizedBox(
+              width: double.infinity,
+              height: 52,
               child: ElevatedButton(
                 onPressed: sub ? null : () async {
                   setBS(() => sub = true);
                   Navigator.of(ctx).pop();
-                  await _doConfirmPickup(notes: notes.trim());
+                  await _doConfirmPickup(
+                    notes: notes.trim(),
+                    photo: selectedPhoto,
+                  );
                 },
                 child: sub
                     ? const SizedBox(width: 22, height: 22,
@@ -203,11 +289,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     );
   }
 
-  Future<void> _doConfirmPickup({String? notes}) async {
+  Future<void> _doConfirmPickup({String? notes, XFile? photo}) async {
     final deliveryId = _activeDelivery?['deliveryId'] ?? _activeDelivery?['id'];
     if (_driverId == null || deliveryId == null) {
-      _snack('Driver/Delivery ID missing.', isError: true); return;
+      _snack('Driver/Delivery ID missing.', isError: true);
+      return;
     }
+    
     setState(() => _isSubmitting = true);
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -215,10 +303,20 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     debugPrint('║  driverId  : $_driverId');
     debugPrint('║  deliveryId: $deliveryId');
     debugPrint('║  notes     : $notes');
+    debugPrint('║  hasPhoto  : ${photo != null}');
     debugPrint('╚══════════════════════════════════════╝');
 
+    List<int>? photoBytes;
+    if (photo != null) {
+      photoBytes = await photo.readAsBytes();
+    }
+
     final result = await AuthService.instance.confirmPickup(
-      driverId: _driverId!, deliveryId: deliveryId.toString(), notes: notes,
+      driverId: _driverId!,
+      deliveryId: deliveryId.toString(),
+      notes: notes,
+      photoBytes: photoBytes,
+      photoFileName: photo?.name,
     );
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -239,14 +337,15 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   }
 
   // ══════════════════════════════════════════════════════
-  //  COMPLETE DELIVERY SHEET
+  //  COMPLETE DELIVERY SHEET WITH SIGNATURE PAD
   //  POST /api/Drivers/{driverId}/deliveries/{deliveryId}/complete
   // ══════════════════════════════════════════════════════
   void _showCompleteSheet() {
     final recipientCtrl = TextEditingController();
     String notes = '';
     String? recipientError;
-
+    XFile? selectedPhoto;
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -254,6 +353,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setBS) {
         bool sub = false;
+        bool showSignaturePad = false;
+        SignaturePadController signatureController = SignaturePadController();
+        
         return Padding(
           padding: EdgeInsets.only(left: 20, right: 20, top: 20,
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
@@ -266,6 +368,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             const Text('Confirm delivery and get recipient details.',
                 style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
             const SizedBox(height: 16),
+            
             // REQUIRED recipient name
             TextField(
               controller: recipientCtrl,
@@ -279,39 +382,188 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 if (recipientError != null) setBS(() => recipientError = null);
               },
             ),
-            const SizedBox(height: 12),
-            SizedBox(width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {/* TODO: image_picker */},
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Take Photo (optional)'),
+            const SizedBox(height: 16),
+            
+            // Photo section
+            const Text('Delivery Photo (optional)',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final photo = await _pickImage(ImageSource.camera);
+                      setBS(() => selectedPhoto = photo);
+                    },
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Camera'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final photo = await _pickImage(ImageSource.gallery);
+                      setBS(() => selectedPhoto = photo);
+                    },
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Gallery'),
+                  ),
+                ),
+              ],
+            ),
+            
+            // Show selected photo preview
+            if (selectedPhoto != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                height: 80,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                  image: DecorationImage(
+                    image: FileImage(File(selectedPhoto!.path)),
+                    fit: BoxFit.cover,
+                  ),
+                ),
               ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: () => setBS(() => selectedPhoto = null),
+                    icon: const Icon(Icons.close, size: 16),
+                    label: const Text('Remove'),
+                    style: TextButton.styleFrom(foregroundColor: AppColors.error),
+                  ),
+                ],
+              ),
+            ],
+            
+            const SizedBox(height: 16),
+            
+            // Signature section
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Signature (optional)',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                if (signatureController.hasSignature)
+                  TextButton(
+                    onPressed: () {
+                      signatureController.clear();
+                      setBS(() {});
+                    },
+                    child: const Text('Clear', style: TextStyle(color: AppColors.error)),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
-            SizedBox(width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {/* TODO: signature pad */},
+            
+            // Signature pad toggle button
+            if (!showSignaturePad && !signatureController.hasSignature)
+              OutlinedButton.icon(
+                onPressed: () {
+                  setBS(() => showSignaturePad = true);
+                },
                 icon: const Icon(Icons.draw),
-                label: const Text('Get Signature (optional)'),
+                label: const Text('Draw Signature'),
               ),
-            ),
-            const SizedBox(height: 12),
+            
+            // Signature pad
+            if (showSignaturePad) ...[
+              Container(
+                height: 150,
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppColors.border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SignaturePad(
+                    controller: signatureController,
+                    onDrawEnd: () {
+                      setBS(() {});
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      signatureController.clear();
+                      setBS(() {});
+                    },
+                    child: const Text('Clear'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () {
+                      setBS(() => showSignaturePad = false);
+                    },
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ],
+            
+            // Show signature preview if signature exists and pad is hidden
+            if (!showSignaturePad && signatureController.hasSignature) ...[
+              Container(
+                height: 60,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SignaturePreview(controller: signatureController),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            
+            const SizedBox(height: 16),
+            
+            // Notes field
             TextField(
-              decoration: const InputDecoration(labelText: 'Notes (optional)',
-                  hintText: 'e.g. Delivered successfully', border: OutlineInputBorder()),
-              onChanged: (v) => notes = v, maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Notes (optional)',
+                hintText: 'e.g. Delivered successfully',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (v) => notes = v,
+              maxLines: 2,
             ),
             const SizedBox(height: 16),
-            SizedBox(width: double.infinity, height: 52,
+            
+            // Submit button
+            SizedBox(
+              width: double.infinity,
+              height: 52,
               child: ElevatedButton(
                 onPressed: sub ? null : () async {
                   final name = recipientCtrl.text.trim();
                   if (name.isEmpty) {
-                    setBS(() => recipientError = 'Recipient name is required'); return;
+                    setBS(() => recipientError = 'Recipient name is required');
+                    return;
                   }
                   setBS(() => sub = true);
                   Navigator.of(ctx).pop();
-                  await _doCompleteDelivery(recipientName: name, notes: notes.trim());
+                  await _doCompleteDelivery(
+                    recipientName: name,
+                    notes: notes.trim(),
+                    photo: selectedPhoto,
+                    signatureBytes: signatureController.hasSignature 
+                        ? await signatureController.getSignatureBytes()
+                        : null,
+                  );
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
                 child: sub
@@ -326,11 +578,18 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     );
   }
 
-  Future<void> _doCompleteDelivery({required String recipientName, String? notes}) async {
+  Future<void> _doCompleteDelivery({
+    required String recipientName,
+    String? notes,
+    XFile? photo,
+    List<int>? signatureBytes,
+  }) async {
     final deliveryId = _activeDelivery?['deliveryId'] ?? _activeDelivery?['id'];
     if (_driverId == null || deliveryId == null) {
-      _snack('Driver/Delivery ID missing.', isError: true); return;
+      _snack('Driver/Delivery ID missing.', isError: true);
+      return;
     }
+    
     setState(() => _isSubmitting = true);
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -339,11 +598,24 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     debugPrint('║  deliveryId   : $deliveryId');
     debugPrint('║  recipientName: $recipientName');
     debugPrint('║  notes        : $notes');
+    debugPrint('║  hasPhoto     : ${photo != null}');
+    debugPrint('║  hasSignature : ${signatureBytes != null}');
     debugPrint('╚══════════════════════════════════════╝');
 
+    List<int>? photoBytes;
+    if (photo != null) {
+      photoBytes = await photo.readAsBytes();
+    }
+
     final result = await AuthService.instance.completeDelivery(
-      driverId: _driverId!, deliveryId: deliveryId.toString(),
-      recipientName: recipientName, notes: notes,
+      driverId: _driverId!,
+      deliveryId: deliveryId.toString(),
+      recipientName: recipientName,
+      notes: notes,
+      photoBytes: photoBytes,
+      photoFileName: photo?.name,
+      signatureBytes: signatureBytes,
+      signatureFileName: 'signature.png',
     );
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -583,6 +855,140 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 }
 
 // ══════════════════════════════════════════════════════════
+//  SIGNATURE PAD CONTROLLER
+// ══════════════════════════════════════════════════════════
+class SignaturePadController {
+  final List<Offset> _points = [];
+  bool get hasSignature => _points.isNotEmpty;
+
+  void addPoint(Offset point) {
+    _points.add(point);
+  }
+
+  void clear() {
+    _points.clear();
+  }
+
+  List<Offset> get points => List.unmodifiable(_points);
+
+  Future<List<int>> getSignatureBytes() async {
+    if (_points.isEmpty) return [];
+    
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = Size(400, 150);
+    
+    // Paint white background
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()..color = Colors.white,
+    );
+    
+    // Paint signature
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    
+    for (int i = 0; i < _points.length - 1; i++) {
+      canvas.drawLine(_points[i], _points[i + 1], paint);
+    }
+    
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(size.width.toInt(), size.height.toInt());
+    final pngBytes = await img.toByteData(format: ui.ImageByteFormat.png);
+    
+    return pngBytes?.buffer.asUint8List() ?? [];
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SIGNATURE PAD WIDGET
+// ══════════════════════════════════════════════════════════
+class SignaturePad extends StatefulWidget {
+  final SignaturePadController controller;
+  final VoidCallback? onDrawEnd;
+  
+  const SignaturePad({
+    super.key,
+    required this.controller,
+    this.onDrawEnd,
+  });
+
+  @override
+  State<SignaturePad> createState() => _SignaturePadState();
+}
+
+class _SignaturePadState extends State<SignaturePad> {
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onPanUpdate: (details) {
+        setState(() {
+          widget.controller.addPoint(details.localPosition);
+        });
+      },
+      onPanEnd: (_) {
+        widget.onDrawEnd?.call();
+      },
+      child: CustomPaint(
+        size: const Size(double.infinity, 150),
+        painter: _SignaturePainter(controller: widget.controller),
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SIGNATURE PAINTER
+// ══════════════════════════════════════════════════════════
+class _SignaturePainter extends CustomPainter {
+  final SignaturePadController controller;
+  
+  _SignaturePainter({required this.controller}) : super();
+  
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.black
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    
+    for (int i = 0; i < controller.points.length - 1; i++) {
+      canvas.drawLine(controller.points[i], controller.points[i + 1], paint);
+    }
+  }
+  
+  @override
+  bool shouldRepaint(covariant _SignaturePainter oldDelegate) {
+    return true;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SIGNATURE PREVIEW
+// ══════════════════════════════════════════════════════════
+class SignaturePreview extends StatelessWidget {
+  final SignaturePadController controller;
+  
+  const SignaturePreview({super.key, required this.controller});
+  
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: const Size(double.infinity, 60),
+      painter: _SignaturePainter(controller: controller),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  OTHER HELPER WIDGETS
+// ══════════════════════════════════════════════════════════
 class _NoActiveDelivery extends StatelessWidget {
   const _NoActiveDelivery();
   @override
@@ -602,7 +1008,6 @@ class _NoActiveDelivery extends StatelessWidget {
   );
 }
 
-// ══════════════════════════════════════════════════════════
 class _StepDot extends StatelessWidget {
   final bool active, done;
   final String label;
@@ -620,7 +1025,6 @@ class _StepDot extends StatelessWidget {
   ]);
 }
 
-// ══════════════════════════════════════════════════════════
 class _DeliveryStep extends StatelessWidget {
   final IconData icon;
   final String title, address, buttonText;
@@ -682,7 +1086,6 @@ class _DeliveryStep extends StatelessWidget {
   }
 }
 
-// ══════════════════════════════════════════════════════════
 class _InfoRow extends StatelessWidget {
   final IconData icon;
   final String label, value;

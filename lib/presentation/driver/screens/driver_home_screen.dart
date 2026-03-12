@@ -4,6 +4,7 @@ import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/available_jobs_screen.dart';
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
 import 'package:food_delivery_app/presentation/driver/screens/driver_stats_screen.dart';
+import 'package:geolocator/geolocator.dart';
 
 class DriverHomeScreen extends StatefulWidget {
   final String? driverId;
@@ -148,6 +149,91 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   }
 
   // ══════════════════════════════════════════════════════
+  //  GET CURRENT LOCATION
+  // ══════════════════════════════════════════════════════
+  Future<Position?> _getCurrentLocation() async {
+    try {
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  GETTING CURRENT LOCATION');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        debugPrint('║  ❌ Location services are disabled');
+        _snack('Please enable location services to go online', isError: true);
+        return null;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          debugPrint('║  ❌ Location permissions are denied');
+          _snack('Location permissions are required to go online', isError: true);
+          return null;
+        }
+      }
+      
+      if (permission == LocationPermission.deniedForever) {
+        debugPrint('║  ❌ Location permissions are permanently denied');
+        _snack('Location permissions are permanently denied. Please enable in settings.', isError: true);
+        return null;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      
+      debugPrint('║  ✅ Location obtained:');
+      debugPrint('║     lat: ${position.latitude}');
+      debugPrint('║     lng: ${position.longitude}');
+      debugPrint('║     accuracy: ${position.accuracy}m');
+      
+      return position;
+    } catch (e) {
+      debugPrint('║  ❌ Error getting location: $e');
+      _snack('Failed to get location: $e', isError: true);
+      return null;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  UPDATE DRIVER LOCATION
+  // ══════════════════════════════════════════════════════
+  Future<bool> _updateDriverLocation(Position position) async {
+    try {
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  UPDATING DRIVER LOCATION');
+      debugPrint('║  driverId  : $_driverId');
+      debugPrint('║  latitude  : ${position.latitude}');
+      debugPrint('║  longitude : ${position.longitude}');
+      debugPrint('║  accuracy  : ${position.accuracy}m');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      final result = await AuthService.instance.updateDriverLocation(
+        driverId: _driverId!,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracyMeters: position.accuracy,
+        speedKmh: 0,
+        headingDegrees: 0,
+        isActiveDelivery: false,
+      );
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  LOCATION UPDATE RESULT');
+      debugPrint('║  success : ${result.success}');
+      debugPrint('║  message : ${result.message}');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      return result.success;
+    } catch (e) {
+      debugPrint('║  ❌ Error updating location: $e');
+      return false;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
   //  TOGGLE AVAILABILITY
   // ══════════════════════════════════════════════════════
   Future<void> _toggleAvailability() async {
@@ -156,6 +242,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           isError: true);
       return;
     }
+    
     setState(() => _isToggling = true);
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -164,27 +251,79 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     debugPrint('║  current  : ${_isOnline ? "Online" : "Offline"}');
     debugPrint('╚══════════════════════════════════════╝');
 
-    final result =
-        await AuthService.instance.toggleDriverAvailability(_driverId!);
+    // If trying to go online, get location first
+    if (!_isOnline) {
+      final position = await _getCurrentLocation();
+      if (position == null) {
+        setState(() => _isToggling = false);
+        return; // Don't proceed if we can't get location
+      }
+      
+      // Call toggle API
+      final result = await AuthService.instance.toggleDriverAvailability(_driverId!);
+      
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  TOGGLE RESULT');
+      debugPrint('║  success : ${result.success}');
+      debugPrint('║  message : ${result.message}');
+      debugPrint('╚══════════════════════════════════════╝');
 
-    debugPrint('\n╔══════════════════════════════════════╗');
-    debugPrint('║  TOGGLE RESULT');
-    debugPrint('║  success : ${result.success}');
-    debugPrint('║  message : ${result.message}');
-    debugPrint('║  data    : ${result.data}');
-    debugPrint('╚══════════════════════════════════════╝');
-
-    if (!mounted) return;
-    if (result.success) {
-      final raw = result.data != null
-          ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
-          : null;
-      final newState = raw != null ? (raw == 'true') : !_isOnline;
-      setState(() { _isOnline = newState; _isToggling = false; });
-      _snack(_isOnline ? 'You\'re now Online 🟢' : 'You\'re now Offline 🔴');
+      if (!mounted) return;
+      
+      if (result.success) {
+        // After successful toggle, update location
+        final locationUpdated = await _updateDriverLocation(position);
+        
+        if (locationUpdated) {
+          final raw = result.data != null
+              ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
+              : null;
+          final newState = raw != null ? (raw == 'true') : !_isOnline;
+          
+          setState(() { 
+            _isOnline = newState; 
+            _isToggling = false; 
+          });
+          
+          _snack('You\'re now Online 🟢');
+        } else {
+          // Location update failed, revert toggle
+          await AuthService.instance.toggleDriverAvailability(_driverId!);
+          setState(() => _isToggling = false);
+          _snack('Failed to update location. Please try again.', isError: true);
+        }
+      } else {
+        setState(() => _isToggling = false);
+        _snack(result.message ?? 'Failed to update status.', isError: true);
+      }
     } else {
-      setState(() => _isToggling = false);
-      _snack(result.message ?? 'Failed to update status.', isError: true);
+      // Going offline - no need for location
+      final result = await AuthService.instance.toggleDriverAvailability(_driverId!);
+      
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  TOGGLE RESULT (Offline)');
+      debugPrint('║  success : ${result.success}');
+      debugPrint('║  message : ${result.message}');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      if (!mounted) return;
+      
+      if (result.success) {
+        final raw = result.data != null
+            ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
+            : null;
+        final newState = raw != null ? (raw == 'true') : !_isOnline;
+        
+        setState(() { 
+          _isOnline = newState; 
+          _isToggling = false; 
+        });
+        
+        _snack('You\'re now Offline 🔴');
+      } else {
+        setState(() => _isToggling = false);
+        _snack(result.message ?? 'Failed to update status.', isError: true);
+      }
     }
   }
 
