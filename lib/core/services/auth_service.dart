@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ══════════════════════════════════════════════════════════
@@ -57,6 +56,13 @@ class ApiConstants {
   static const String catalogProducts         = '$baseUrl/api/catalog/products';
   static String catalogProductById(String id) => '$baseUrl/api/catalog/products/$id';
   static const String catalogFilters          = '$baseUrl/api/catalog/filters';
+
+  // ── Deliveries (Driver) ────────────────────────────────
+  static const String deliveries = '$baseUrl/api/Deliveries';
+  static String acceptDelivery(String driverId, String deliveryId) =>
+      '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/accept';
+  static String rejectDelivery(String driverId, String deliveryId) =>
+      '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/reject';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -270,69 +276,33 @@ class AuthService {
   }
 
   Future<AuthResult> uploadDriverDocument({
-  required String driverId,
-  required String documentType,
-  required List<int> fileBytes,
-  required String fileName,
-}) async {
-  try {
-    final uri = Uri.parse(
-        '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
-
-    debugPrint('║ UPLOAD DOC URL: $uri');
-    debugPrint('║ UPLOAD DOC fileName: $fileName');
-    debugPrint('║ UPLOAD DOC fileSize: ${fileBytes.length} bytes');
-
-    final request = http.MultipartRequest('POST', uri);
-    final token = await getAccessToken();
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
-      request.headers['Accept'] = 'application/json';
+    required String driverId,
+    required String documentType,
+    required List<int> fileBytes,
+    required String fileName,
+  }) async {
+    try {
+      final uri = Uri.parse(
+          '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
+      final request = http.MultipartRequest('POST', uri);
+      final token = await getAccessToken();
+      if (token != null) {
+        request.headers['Authorization'] = 'Bearer $token';
+        request.headers['Accept'] = 'application/json';
+      }
+      request.files.add(
+          http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamed);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return const AuthResult(success: true);
+      }
+      return AuthResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
-
-    // Detect MIME type from file extension
-    final ext = fileName.split('.').last.toLowerCase();
-    String mimeType;
-    String mimeSubtype;
-    switch (ext) {
-      case 'jpg':
-      case 'jpeg':
-        mimeType = 'image'; mimeSubtype = 'jpeg'; break;
-      case 'png':
-        mimeType = 'image'; mimeSubtype = 'png'; break;
-      case 'pdf':
-        mimeType = 'application'; mimeSubtype = 'pdf'; break;
-      default:
-        mimeType = 'image'; mimeSubtype = 'jpeg';
-    }
-
-    request.files.add(
-      http.MultipartFile.fromBytes(
-        'file',
-        fileBytes,
-        filename: fileName,
-        contentType: MediaType(mimeType, mimeSubtype),
-      ),
-    );
-
-    final streamed = await request.send().timeout(const Duration(seconds: 60));
-    final response = await http.Response.fromStream(streamed);
-
-    debugPrint('║ UPLOAD DOC STATUS: ${response.statusCode}');
-    debugPrint('║ UPLOAD DOC RESPONSE BODY: ${response.body}');
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return const AuthResult(success: true);
-    }
-    return AuthResult(
-      success: false,
-      message: _errorMessage(_safeJsonDecode(response.body), response.statusCode),
-    );
-  } on Exception catch (e) {
-    debugPrint('║ UPLOAD DOC EXCEPTION: $e');
-    return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
   }
-}
 
   Future<AuthResult> login({
     required String email,
@@ -449,10 +419,14 @@ class AuthService {
 
   Future<AuthResult> toggleDriverAvailability(String driverId) async {
     try {
+      final url = ApiConstants.driverToggle(driverId);
+      _log('TOGGLE AVAILABILITY REQUEST', url,
+          extra: 'driverId: $driverId');
       final response = await http
-          .patch(Uri.parse(ApiConstants.driverToggle(driverId)),
-              headers: await _authHeaders)
+          .patch(Uri.parse(url), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
+      _log('TOGGLE AVAILABILITY RESPONSE', url,
+          status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return AuthResult(success: true, data: resBody);
@@ -1134,6 +1108,130 @@ class AuthService {
       _log('GET CATALOG FILTERS RESPONSE', ApiConstants.catalogFilters,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  DELIVERIES (Driver)
+  // ══════════════════════════════════════════════════════
+
+  /// GET /api/Deliveries
+  /// Gets all deliveries assigned to this driver.
+  /// The backend spec shows status=2 but returns 403 with query params —
+  /// so we fetch without params and filter by driverId on the frontend.
+  Future<ApiResult<List<dynamic>>> getDeliveries({int status = 2}) async {
+    try {
+      // ── Attempt 1: no query params (most permissive) ──
+      final uriNoParams = Uri.parse(ApiConstants.deliveries);
+      _log('GET DELIVERIES REQUEST (no params)', uriNoParams.toString());
+      final r1 = await http
+          .get(uriNoParams, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DELIVERIES RESPONSE (no params)', uriNoParams.toString(),
+          status: r1.statusCode, body: r1.body);
+
+      if (r1.statusCode == 200) {
+        return _parseDeliveriesList(r1.body);
+      }
+
+      // ── Attempt 2: ?status=2 (integer) ───────────────
+      final uriInt = Uri.parse(ApiConstants.deliveries)
+          .replace(queryParameters: {'status': status.toString()});
+      _log('GET DELIVERIES REQUEST (status int)', uriInt.toString());
+      final r2 = await http
+          .get(uriInt, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DELIVERIES RESPONSE (status int)', uriInt.toString(),
+          status: r2.statusCode, body: r2.body);
+
+      if (r2.statusCode == 200) {
+        return _parseDeliveriesList(r2.body);
+      }
+
+      // ── Attempt 3: ?status=Assigned (string) ─────────
+      final uriStr = Uri.parse(ApiConstants.deliveries)
+          .replace(queryParameters: {'status': 'Assigned'});
+      _log('GET DELIVERIES REQUEST (status string)', uriStr.toString());
+      final r3 = await http
+          .get(uriStr, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DELIVERIES RESPONSE (status string)', uriStr.toString(),
+          status: r3.statusCode, body: r3.body);
+
+      if (r3.statusCode == 200) {
+        return _parseDeliveriesList(r3.body);
+      }
+
+      // All attempts failed — return the error from the last response
+      return ApiResult(success: false,
+          message: _errorMessage(
+              _safeJsonDecode(r3.body), r3.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false,
+          message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// Parses a raw response body into a List of delivery maps.
+  ApiResult<List<dynamic>> _parseDeliveriesList(String body) {
+    final decoded = _safeJsonDecodeAny(body);
+    if (decoded is List) return ApiResult(success: true, data: decoded);
+    if (decoded is Map<String, dynamic>) {
+      final list = decoded['data'] ??
+          decoded['items'] ??
+          decoded['deliveries'] ??
+          decoded['results'];
+      if (list is List) return ApiResult(success: true, data: list);
+    }
+    return const ApiResult(success: true, data: []);
+  }
+
+  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/accept
+  Future<ApiResult<Map<String, dynamic>>> acceptDelivery({
+    required String driverId,
+    required String deliveryId,
+  }) async {
+    try {
+      final url = ApiConstants.acceptDelivery(driverId, deliveryId);
+      _log('ACCEPT DELIVERY REQUEST', url);
+      final response = await http
+          .post(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('ACCEPT DELIVERY RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/reject
+  Future<ApiResult<Map<String, dynamic>>> rejectDelivery({
+    required String driverId,
+    required String deliveryId,
+    required String reason,
+  }) async {
+    try {
+      final url = ApiConstants.rejectDelivery(driverId, deliveryId);
+      _log('REJECT DELIVERY REQUEST', url, extra: 'reason: $reason');
+      final response = await http
+          .post(Uri.parse(url),
+              headers: await _authHeaders,
+              body: jsonEncode({'reason': reason}))
+          .timeout(const Duration(seconds: 30));
+      _log('REJECT DELIVERY RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
       return ApiResult(success: false,

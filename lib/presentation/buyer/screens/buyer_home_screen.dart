@@ -7,7 +7,8 @@ import 'package:food_delivery_app/presentation/buyer/screens/supplier_detail_scr
 
 class BuyerHomeScreen extends StatefulWidget {
   final void Function({String? searchQuery}) onBrowseTap;
-  const BuyerHomeScreen({super.key, required this.onBrowseTap});
+  final VoidCallback? onViewCart;
+  const BuyerHomeScreen({super.key, required this.onBrowseTap, this.onViewCart});
   @override
   State<BuyerHomeScreen> createState() => _BuyerHomeScreenState();
 }
@@ -119,6 +120,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
         builder: (_) => CategoryProductsScreen(
           category:   name,
           categoryId: intId,
+          onViewCart: widget.onViewCart,
         ),
       ),
     );
@@ -369,7 +371,10 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => ProductDetailScreen(product: p),
+                              builder: (_) => ProductDetailScreen(
+                                product:    p,
+                                onViewCart: widget.onViewCart,
+                              ),
                             ),
                           ),
                         );
