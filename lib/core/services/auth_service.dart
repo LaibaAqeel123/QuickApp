@@ -257,15 +257,22 @@ class AuthService {
     String? businessName,
     String? licenseNumber,
     String? licensePlate,
+    String? vehicleType,
+    String? vehicleModel,
   }) async {
     try {
       final body = {
-        'email': email, 'password': password,
-        'firstName': firstName, 'lastName': lastName,
-        'phoneNumber': phoneNumber, 'userType': userType,
+        'email': email,
+        'password': password,
+        'firstName': firstName,
+        'lastName': lastName,
+        'phoneNumber': phoneNumber,
+        'userType': userType,
         'businessName': businessName ?? '',
         'licenseNumber': licenseNumber ?? '',
         'licensePlate': licensePlate ?? '',
+        'vehicleType': vehicleType ?? '',   // ← ADD THIS
+        'vehicleModel': vehicleModel ?? '', // ← ADD THIS
       };
       _log('REGISTER REQUEST', ApiConstants.register);
       final response = await http

@@ -1,8 +1,5 @@
-// lib/presentation/auth/screens/signup_screen.dart
-import 'dart:convert';
-import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 
@@ -63,16 +60,14 @@ class _SignupScreenState extends State<SignupScreen>
   final _confirmPasswordController = TextEditingController();
   final _licenseNumberController   = TextEditingController();
   final _licensePlateController    = TextEditingController();
+  final _vehicleModelController    = TextEditingController();
 
   bool _isPasswordVisible        = false;
   bool _isConfirmPasswordVisible = false;
   bool _isLoading                = false;
   String _loadingMessage         = 'Creating account...';
   UserType _selectedType         = UserType.customer;
-
-  // Document upload state
-  XFile? _licenseDocument;
-  final ImagePicker _picker = ImagePicker();
+  String? _selectedVehicleType;
 
   late final AnimationController _animController;
   late final Animation<double> _fadeAnim;
@@ -98,79 +93,17 @@ class _SignupScreenState extends State<SignupScreen>
     _confirmPasswordController.dispose();
     _licenseNumberController.dispose();
     _licensePlateController.dispose();
+    _vehicleModelController.dispose();
     super.dispose();
   }
 
-  // ── Pick document from gallery or camera ────────
-  Future<void> _pickDocument() async {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.border,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Upload Driving License',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-            ),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined,
-                  color: AppColors.primary),
-              title: const Text('Take a Photo'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final file = await _picker.pickImage(
-                  source: ImageSource.camera,
-                  imageQuality: 85,
-                );
-                if (file != null) setState(() => _licenseDocument = file);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined,
-                  color: AppColors.primary),
-              title: const Text('Choose from Gallery'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final file = await _picker.pickImage(
-                  source: ImageSource.gallery,
-                  imageQuality: 85,
-                );
-                if (file != null) setState(() => _licenseDocument = file);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Validators ──────────────────────────────────
   String? _req(String? v, String field) =>
       (v == null || v.trim().isEmpty) ? '$field is required' : null;
 
   String? _validateEmail(String? value) {
     if (value == null || value.isEmpty) return 'Email is required';
-    if (!RegExp(r'^[\w\-.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
+    if (!RegExp(r'^[\w\-.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value))
       return 'Enter a valid email address';
-    }
     return null;
   }
 
@@ -205,13 +138,11 @@ class _SignupScreenState extends State<SignupScreen>
     return null;
   }
 
-  // ── Submit ───────────────────────────────────────
   Future<void> _handleSignup() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // Extra check for driver document
-    if (_selectedType == UserType.driver && _licenseDocument == null) {
-      _showSnackbar('Please upload your driving license.', isError: true);
+    if (_selectedType == UserType.driver && _selectedVehicleType == null) {
+      _showSnackbar('Please select your vehicle type.', isError: true);
       return;
     }
 
@@ -222,21 +153,22 @@ class _SignupScreenState extends State<SignupScreen>
 
     final formattedPhone = _formatPhoneForBackend(_phoneController.text.trim());
 
-    // ── Step 1: Register ─────────────────────────
     final result = await AuthService.instance.register(
-      firstName:     _firstNameController.text.trim(),
-      lastName:      _lastNameController.text.trim(),
-      email:         _emailController.text.trim(),
-      password:      _passwordController.text,
-      phoneNumber:   formattedPhone,
-      userType:      _selectedType.apiValue,
-      businessName:  '',
+      firstName:    _firstNameController.text.trim(),
+      lastName:     _lastNameController.text.trim(),
+      email:        _emailController.text.trim(),
+      password:     _passwordController.text,
+      phoneNumber:  formattedPhone,
+      userType:     _selectedType.apiValue,
+      businessName: '',
       licenseNumber: _selectedType == UserType.driver
-          ? _licenseNumberController.text.trim().toUpperCase()
-          : '',
+          ? _licenseNumberController.text.trim().toUpperCase() : '',
       licensePlate: _selectedType == UserType.driver
-          ? _licensePlateController.text.trim().toUpperCase()
-          : '',
+          ? _licensePlateController.text.trim().toUpperCase() : '',
+      vehicleType:  _selectedType == UserType.driver
+          ? _selectedVehicleType : null,
+      vehicleModel: _selectedType == UserType.driver
+          ? _vehicleModelController.text.trim() : null,
     );
 
     if (!mounted) return;
@@ -249,64 +181,6 @@ class _SignupScreenState extends State<SignupScreen>
       return;
     }
 
-    // ── Step 2: Upload document for drivers ──────
-    if (_selectedType == UserType.driver && _licenseDocument != null) {
-      setState(() => _loadingMessage = 'Uploading driving license...');
-
-      // Extract userId from JWT token sub claim
-// Register response has no userId but token contains sub = userId
-String? driverId;
-final token = result.data?['token']?.toString();
-if (token != null) {
-  try {
-    final parts = token.split('.');
-    if (parts.length == 3) {
-      final payload = parts[1];
-      final normalized = base64Url.normalize(payload);
-      final decoded = utf8.decode(base64Url.decode(normalized));
-      final json = jsonDecode(decoded) as Map<String, dynamic>;
-      driverId = json['sub']?.toString();
-      debugPrint('║ DRIVER ID FROM JWT: $driverId');
-    }
-  } catch (e) {
-    debugPrint('║ JWT DECODE ERROR: $e');
-  }
-}
-
-      if (driverId != null) {
-        final fileBytes = await _licenseDocument!.readAsBytes();
-        final fileName  = _licenseDocument!.name;
-
-        
-
-        final uploadResult = await AuthService.instance.uploadDriverDocument(
-          driverId:     driverId,
-          documentType: 'License',
-          fileBytes:    fileBytes,
-          fileName:     fileName,
-        );
-        // ADD THESE DEBUG LINES:
-debugPrint('║ UPLOAD RESULT SUCCESS: ${uploadResult.success}');
-debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
-
-        if (!mounted) return;
-
-        if (!uploadResult.success) {
-          // Registration succeeded but upload failed
-          // Still show verification dialog — driver can upload later
-          setState(() => _isLoading = false);
-          _showSnackbar(
-            'Account created but document upload failed: ${uploadResult.message ?? "Please try again later."}',
-            isError: true,
-          );
-          // Still proceed to email verification
-          _showEmailVerificationDialog(_emailController.text.trim());
-          return;
-        }
-      }
-    }
-
-    if (!mounted) return;
     setState(() => _isLoading = false);
     _showEmailVerificationDialog(_emailController.text.trim());
   }
@@ -338,8 +212,8 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
 
   void _onTypeChanged(UserType type) {
     setState(() {
-      _selectedType = type;
-      if (type != UserType.driver) _licenseDocument = null;
+      _selectedType        = type;
+      _selectedVehicleType = null;
     });
     type == UserType.driver
         ? _animController.forward()
@@ -382,14 +256,12 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                 const SizedBox(height: 20),
                 const Text('Create Account',
                     style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
+                        fontSize: 28, fontWeight: FontWeight.bold,
                         color: AppColors.textPrimary),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 6),
                 const Text('Fill in your details to get started',
-                    style: TextStyle(
-                        fontSize: 14, color: AppColors.textSecondary),
+                    style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
                     textAlign: TextAlign.center),
                 const SizedBox(height: 28),
 
@@ -399,18 +271,18 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                 Row(
                   children: UserType.values
                       .map((type) => Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.only(
-                                right: type == UserType.customer ? 8 : 0,
-                                left:  type == UserType.driver   ? 8 : 0,
-                              ),
-                              child: _UserTypeCard(
-                                type: type,
-                                isSelected: _selectedType == type,
-                                onTap: () => _onTypeChanged(type),
-                              ),
-                            ),
-                          ))
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        right: type == UserType.customer ? 8 : 0,
+                        left:  type == UserType.driver   ? 8 : 0,
+                      ),
+                      child: _UserTypeCard(
+                        type: type,
+                        isSelected: _selectedType == type,
+                        onTap: () => _onTypeChanged(type),
+                      ),
+                    ),
+                  ))
                       .toList(),
                 ),
                 const SizedBox(height: 24),
@@ -482,7 +354,7 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                           ? Icons.visibility_outlined
                           : Icons.visibility_off_outlined),
                       onPressed: () => setState(
-                          () => _isPasswordVisible = !_isPasswordVisible),
+                              () => _isPasswordVisible = !_isPasswordVisible),
                     ),
                   ),
                 ),
@@ -500,8 +372,7 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                           ? Icons.visibility_outlined
                           : Icons.visibility_off_outlined),
                       onPressed: () => setState(() =>
-                          _isConfirmPasswordVisible =
-                              !_isConfirmPasswordVisible),
+                      _isConfirmPasswordVisible = !_isConfirmPasswordVisible),
                     ),
                   ),
                 ),
@@ -524,8 +395,7 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                           controller: _licenseNumberController,
                           textCapitalization: TextCapitalization.characters,
                           validator: _selectedType == UserType.driver
-                              ? (v) => _req(v, 'License number')
-                              : null,
+                              ? (v) => _req(v, 'License number') : null,
                           decoration: const InputDecoration(
                             labelText: 'License Number',
                             hintText: 'e.g. MORGA753116SM9IJ',
@@ -539,8 +409,7 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                           controller: _licensePlateController,
                           textCapitalization: TextCapitalization.characters,
                           validator: _selectedType == UserType.driver
-                              ? (v) => _req(v, 'License plate')
-                              : null,
+                              ? (v) => _req(v, 'License plate') : null,
                           decoration: const InputDecoration(
                             labelText: 'License Plate',
                             hintText: 'e.g. AB12 CDE',
@@ -549,127 +418,63 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
                         ),
                         const SizedBox(height: 16),
 
-                        // ── Driving License Document Upload ──────
-                        _sectionLabel('Driving License Document'),
-                        const SizedBox(height: 10),
+                        // Vehicle Type Dropdown
+                        DropdownButtonFormField<String>(
+                          value: _selectedVehicleType,
+                          validator: _selectedType == UserType.driver
+                              ? (v) => v == null ? 'Vehicle type is required' : null
+                              : null,
+                          decoration: const InputDecoration(
+                            labelText: 'Vehicle Type',
+                            prefixIcon: Icon(Icons.commute_outlined),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 'Car',     child: Text('Car')),
+                            DropdownMenuItem(value: 'Van',     child: Text('Van')),
+                            DropdownMenuItem(value: 'Bicycle', child: Text('Bicycle')),
+                            DropdownMenuItem(value: 'Truck',   child: Text('Truck')),
+                          ],
+                          onChanged: (v) => setState(() => _selectedVehicleType = v),
+                        ),
+                        const SizedBox(height: 16),
 
-                        if (_licenseDocument == null)
-                          // Upload button — no document picked yet
-                          GestureDetector(
-                            onTap: _pickDocument,
-                            child: Container(
-                              height: 120,
-                              decoration: BoxDecoration(
-                                color: AppColors.surface,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: AppColors.primary,
-                                  width: 1.5,
-                                  // Dashed effect via custom painter not needed
-                                  // — solid border looks clean
-                                ),
-                              ),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.upload_file_outlined,
-                                      size: 36,
-                                      color: AppColors.primary.withOpacity(0.8)),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'Tap to upload driving license',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: AppColors.primary,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  const Text(
-                                    'Photo or image from gallery',
-                                    style: TextStyle(
-                                        fontSize: 11,
-                                        color: AppColors.textSecondary),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        else
-                          // Preview — document picked
-                          Stack(
+                        // Vehicle Model
+                        TextFormField(
+                          controller: _vehicleModelController,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: const InputDecoration(
+                            labelText: 'Vehicle Model (Optional)',
+                            hintText: 'e.g. Toyota Corolla',
+                            prefixIcon: Icon(Icons.car_repair_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Info box — document upload after login
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: AppColors.primary.withOpacity(0.3)),
+                          ),
+                          child: const Row(
                             children: [
-                              Container(
-                                height: 120,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                      color: AppColors.success, width: 2),
-                                ),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: Image.file(
-                                    File(_licenseDocument!.path),
-                                    fit: BoxFit.cover,
-                                    width: double.infinity,
-                                  ),
-                                ),
-                              ),
-                              // Change button top right
-                              Positioned(
-                                top: 8, right: 8,
-                                child: GestureDetector(
-                                  onTap: _pickDocument,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.6),
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.edit, size: 12,
-                                            color: Colors.white),
-                                        SizedBox(width: 4),
-                                        Text('Change',
-                                            style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.w600)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              // Tick overlay bottom left
-                              Positioned(
-                                bottom: 8, left: 8,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 10, vertical: 5),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.success,
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: const Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.check_circle,
-                                          size: 12, color: Colors.white),
-                                      SizedBox(width: 4),
-                                      Text('Document ready',
-                                          style: TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.w600)),
-                                    ],
-                                  ),
+                              Icon(Icons.info_outline,
+                                  color: AppColors.primary, size: 18),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'You can upload your license & insurance documents after logging in.',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: AppColors.primary),
                                 ),
                               ),
                             ],
                           ),
+                        ),
                       ],
                     ),
                   ),
@@ -677,26 +482,26 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
 
                 const SizedBox(height: 32),
 
-                // Submit button — shows loading message
+                // Submit Button
                 SizedBox(
                   height: 56,
                   child: ElevatedButton(
                     onPressed: _isLoading ? null : _handleSignup,
                     child: _isLoading
                         ? Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const SizedBox(
-                                width: 20, height: 20,
-                                child: CircularProgressIndicator(
-                                    color: AppColors.white, strokeWidth: 2.5),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(_loadingMessage,
-                                  style: const TextStyle(
-                                      color: AppColors.white, fontSize: 14)),
-                            ],
-                          )
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(
+                              color: AppColors.white, strokeWidth: 2.5),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(_loadingMessage,
+                            style: const TextStyle(
+                                color: AppColors.white, fontSize: 14)),
+                      ],
+                    )
                         : const Text('Create Account'),
                   ),
                 ),
@@ -726,14 +531,12 @@ debugPrint('║ UPLOAD RESULT MESSAGE: ${uploadResult.message}');
   }
 
   Widget _sectionLabel(String label) => Text(
-        label,
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          color: AppColors.textSecondary,
-          letterSpacing: 0.5,
-        ),
-      );
+    label,
+    style: const TextStyle(
+      fontSize: 12, fontWeight: FontWeight.w700,
+      color: AppColors.textSecondary, letterSpacing: 0.5,
+    ),
+  );
 }
 
 // ── Email Verification Dialog ──────────────────────────
@@ -764,7 +567,7 @@ class _EmailVerificationDialogState extends State<_EmailVerificationDialog> {
       _isResending     = false;
       _feedbackSuccess = result.success;
       _feedbackMessage = result.success
-          ? '✅ Email sent! Check your inbox & spam folder.'
+          ? 'Email sent! Check your inbox & spam folder.'
           : result.message ?? 'Failed to resend. Please try again.';
     });
   }
@@ -792,8 +595,7 @@ class _EmailVerificationDialogState extends State<_EmailVerificationDialog> {
               const SizedBox(height: 20),
               const Text('Verify Your Email',
                   style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
+                      fontSize: 22, fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary),
                   textAlign: TextAlign.center),
               const SizedBox(height: 12),
@@ -831,10 +633,9 @@ class _EmailVerificationDialogState extends State<_EmailVerificationDialog> {
                         : AppColors.error.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: _feedbackSuccess
-                          ? Colors.green
-                          : AppColors.error,
-                    ),
+                        color: _feedbackSuccess
+                            ? Colors.green
+                            : AppColors.error),
                   ),
                   child: Text(
                     _feedbackMessage!,
@@ -869,9 +670,9 @@ class _EmailVerificationDialogState extends State<_EmailVerificationDialog> {
                   onPressed: _isResending ? null : _resend,
                   child: _isResending
                       ? const SizedBox(
-                          width: 20, height: 20,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: AppColors.primary))
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.primary))
                       : const Text('Resend Verification Email'),
                 ),
               ),
