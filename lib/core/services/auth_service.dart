@@ -258,7 +258,7 @@ class AuthService {
     String? licenseNumber,
     String? licensePlate,
     String? vehicleType,
-    String? vehicleModel,
+    String? vehicleModel,  // ← ADD THIS
   }) async {
     try {
       final body = {
