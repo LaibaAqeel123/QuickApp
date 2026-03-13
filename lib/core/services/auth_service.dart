@@ -288,8 +288,10 @@ class AuthService {
           await saveTokens(
             accessToken: token,
             refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
-            role: _extract(resBody, ['role', 'userType'])?.toLowerCase(),
-            userId: _extract(resBody, ['id', 'userId', 'sub']),
+            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])
+                ?.toLowerCase(),
+            userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
+            driverId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']), // driver id same as user id
           );
         }
         return AuthResult(success: true, data: resBody);

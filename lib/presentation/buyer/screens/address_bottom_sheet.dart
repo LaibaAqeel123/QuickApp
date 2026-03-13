@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
+import 'package:geolocator/geolocator.dart';
 
 /// Shows a bottom sheet for creating or editing an address.
 /// Returns the saved address map on success, null on cancel.
@@ -90,6 +91,16 @@ class _AddressBottomSheetState extends State<AddressBottomSheet> {
     ApiResult<Map<String, dynamic>> result;
 
     if (_isEditing && _existingId != null) {
+// Get real GPS coordinates
+      double? lat, lng;
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        lat = position.latitude;
+        lng = position.longitude;
+      } catch (_) {}
+
       result = await AuthService.instance.updateAddress(
         addressId:     _existingId!,
         streetAddress: _streetController.text.trim(),
@@ -101,8 +112,19 @@ class _AddressBottomSheetState extends State<AddressBottomSheet> {
         addressType:   _addressType,
         isDefault:     _isDefault,
         label:         _labelController.text.trim(),
-      );
-    } else {
+        latitude:      lat,
+        longitude:     lng,
+      );    } else {
+      // Get real GPS coordinates
+      double? lat, lng;
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        lat = position.latitude;
+        lng = position.longitude;
+      } catch (_) {}
+
       result = await AuthService.instance.createAddress(
         streetAddress: _streetController.text.trim(),
         apartment:     _apartmentController.text.trim(),
@@ -113,6 +135,8 @@ class _AddressBottomSheetState extends State<AddressBottomSheet> {
         addressType:   _addressType,
         isDefault:     _isDefault,
         label:         _labelController.text.trim(),
+        latitude:      lat,
+        longitude:     lng,
       );
     }
 
