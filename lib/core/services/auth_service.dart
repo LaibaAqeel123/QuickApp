@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ApiConstants {
   static const String baseUrl = 'https://api.neptasolutions.co.uk';
 
-  // ── Auth ───────────────────────────────────────────────
   static const String register           = '$baseUrl/api/auth/register';
   static const String login              = '$baseUrl/api/auth/login';
   static const String logout             = '$baseUrl/api/auth/logout';
@@ -18,7 +17,6 @@ class ApiConstants {
   static const String verifyEmail        = '$baseUrl/api/auth/verify-email';
   static const String resendVerification = '$baseUrl/api/auth/resend-verification';
 
-  // ── Driver ─────────────────────────────────────────────
   static String driverById(String id)      => '$baseUrl/api/Drivers/$id';
   static String driverToggle(String id)    => '$baseUrl/api/Drivers/$id/toggle-availability';
   static String driverStatus(String id)    => '$baseUrl/api/Drivers/$id/status';
@@ -26,39 +24,32 @@ class ApiConstants {
   static String driverUploadDoc(String id) => '$baseUrl/api/Drivers/$id/upload-document';
   static String driverStats(String id)     => '$baseUrl/api/Drivers/$id/stats';
 
-  // ── Cart ───────────────────────────────────────────────
   static const String cart          = '$baseUrl/api/cart';
   static const String cartItems     = '$baseUrl/api/cart/items';
   static String cartItem(String id) => '$baseUrl/api/cart/items/$id';
 
-  // ── Orders (Buyer) ─────────────────────────────────────
   static const String ordersCheckout      = '$baseUrl/api/orders/checkout';
   static const String myOrders            = '$baseUrl/api/orders/my';
   static String myOrderById(String id)    => '$baseUrl/api/orders/my/$id';
   static String cancelOrder(String id)    => '$baseUrl/api/orders/my/$id/cancel';
   static const String myOrdersAnalytics   = '$baseUrl/api/orders/my/analytics';
 
-  // ── Orders (Supplier) ──────────────────────────────────
   static const String supplierOrders                              = '$baseUrl/api/orders/supplier';
   static String supplierOrderById(String id)                      => '$baseUrl/api/orders/supplier/$id';
   static String supplierOrderItemStatus(String oId, String iId)  => '$baseUrl/api/orders/supplier/$oId/items/$iId/status';
   static const String supplierOrdersAnalytics                     = '$baseUrl/api/orders/supplier/analytics';
 
-  // ── Categories ─────────────────────────────────────────
   static const String categories     = '$baseUrl/api/categories';
   static String categoryById(int id) => '$baseUrl/api/categories/$id';
 
-  // ── Addresses ──────────────────────────────────────────
   static const String addresses              = '$baseUrl/api/addresses';
   static String addressById(String id)       => '$baseUrl/api/addresses/$id';
   static String addressDefault(String id)    => '$baseUrl/api/addresses/$id/default';
 
-  // ── Catalog ────────────────────────────────────────────
   static const String catalogProducts         = '$baseUrl/api/catalog/products';
   static String catalogProductById(String id) => '$baseUrl/api/catalog/products/$id';
   static const String catalogFilters          = '$baseUrl/api/catalog/filters';
 
-  // ── Deliveries (Driver) ────────────────────────────────
   static const String deliveries = '$baseUrl/api/Deliveries';
   static String acceptDelivery(String driverId, String deliveryId) =>
       '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/accept';
@@ -69,7 +60,6 @@ class ApiConstants {
   static String completeDelivery(String driverId, String deliveryId) =>
       '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/complete';
 
-  // ── Earnings ───────────────────────────────────────────
   static String earningsSummary(String driverId) =>
       '$baseUrl/api/Earnings/drivers/$driverId/summary';
   static String earningsByDateRange(String driverId) =>
@@ -111,7 +101,6 @@ class AuthService {
   AuthService._();
   static final AuthService instance = AuthService._();
 
-  // ── Headers ────────────────────────────────────────────
   Map<String, String> get _jsonHeaders => {
         'Content-Type': 'application/json',
         'Accept':       'application/json',
@@ -134,7 +123,6 @@ class AuthService {
     };
   }
 
-  // ── JSON helpers ───────────────────────────────────────
   Map<String, dynamic> _safeJsonDecode(String body) {
     try {
       if (body.trim().isEmpty) return {};
@@ -258,7 +246,7 @@ class AuthService {
     String? licenseNumber,
     String? licensePlate,
     String? vehicleType,
-    String? vehicleModel,  // ← ADD THIS
+    String? vehicleModel,
   }) async {
     try {
       final body = {
@@ -271,8 +259,8 @@ class AuthService {
         'businessName': businessName ?? '',
         'licenseNumber': licenseNumber ?? '',
         'licensePlate': licensePlate ?? '',
-        'vehicleType': vehicleType ?? '',   // ← ADD THIS
-        'vehicleModel': vehicleModel ?? '', // ← ADD THIS
+        'vehicleType': vehicleType ?? '',
+        'vehicleModel': vehicleModel ?? '',
       };
       _log('REGISTER REQUEST', ApiConstants.register);
       final response = await http
@@ -291,7 +279,7 @@ class AuthService {
             role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])
                 ?.toLowerCase(),
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
-            driverId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']), // driver id same as user id
+            driverId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
         }
         return AuthResult(success: true, data: resBody);
@@ -332,6 +320,9 @@ class AuthService {
     }
   }
 
+  // ══════════════════════════════════════════════════════
+  //  LOGIN — FIXED: now saves driverId after login
+  // ══════════════════════════════════════════════════════
   Future<AuthResult> login({
     required String email,
     required String password,
@@ -346,17 +337,75 @@ class AuthService {
       _log('LOGIN RESPONSE', ApiConstants.login,
           status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
+
       if (response.statusCode == 200 || response.statusCode == 201) {
         final token = _extract(resBody,
             ['token', 'access_token', 'accessToken', 'data.token']);
         if (token != null) {
+          // Step 1: save token + userId first (driverId not in login response)
           await saveTokens(
-            accessToken: token,
+            accessToken:  token,
             refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
-            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])
+            role: _extract(resBody,
+                    ['role', 'userType', 'user.role', 'data.role'])
                 ?.toLowerCase(),
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
+
+          // Step 2: fetch /api/auth/me to resolve the real driverId
+          // The login response only returns auth tokens — the driverId lives
+          // in the driver profile which is returned by the /me endpoint.
+          try {
+            final profileResp = await http
+                .get(Uri.parse(ApiConstants.me), headers: await _authHeaders)
+                .timeout(const Duration(seconds: 15));
+            _log('LOGIN — PROFILE FETCH', ApiConstants.me,
+                status: profileResp.statusCode, body: profileResp.body);
+
+            if (profileResp.statusCode == 200) {
+              final profile = _safeJsonDecode(profileResp.body);
+
+              // Try every key path the API might use for driverId
+              final dId = _extract(profile, [
+                'driverId',
+                'driver_id',
+                'driver.id',
+                'driver.driverId',
+                'driverProfile.id',
+                'driverProfile.driverId',
+                'driverDetails.id',
+                'driverDetails.driverId',
+              ]);
+
+              if (dId != null && dId.isNotEmpty) {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString(_PrefKeys.driverId, dId);
+                debugPrint('[login] ✅ driverId saved: $dId');
+              } else {
+                // driverId not found at top level — log all keys so we can
+                // add the right path above on the next iteration.
+                debugPrint('[login] ⚠️  driverId NOT found in profile response.');
+                debugPrint('[login]     top-level keys: ${profile.keys.toList()}');
+                if (profile.containsKey('driver') &&
+                    profile['driver'] is Map) {
+                  debugPrint('[login]     driver keys: '
+                      '${(profile['driver'] as Map).keys.toList()}');
+                }
+              }
+
+              // Also save role from profile in case login response omitted it
+              final role = _extract(profile,
+                  ['role', 'userType', 'user.role', 'userRole']);
+              if (role != null) {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString(_PrefKeys.userRole, role.toLowerCase());
+              }
+            }
+          } catch (e) {
+            // Non-fatal — the screen will show "No jobs" but won't crash.
+            // driverId can be resolved later via getDriverProfile().
+            debugPrint('[login] profile fetch error (non-fatal): $e');
+          }
         }
         return AuthResult(success: true, data: resBody);
       }
@@ -423,18 +472,30 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  DRIVER
   // ══════════════════════════════════════════════════════
+
+  // FIXED: wider key search for driverId in profile response
   Future<AuthResult> getDriverProfile(String driverId) async {
     try {
       final response = await http
           .get(Uri.parse(ApiConstants.driverById(driverId)),
               headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
+      _log('GET DRIVER PROFILE RESPONSE', ApiConstants.driverById(driverId),
+          status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200) {
-        final id = _extract(resBody, ['id', 'driverId', 'data.id']);
+        final id = _extract(resBody, [
+          'id',
+          'driverId',
+          'driver_id',
+          'driverProfile.id',
+          'driverProfile.driverId',
+          'data.id',
+        ]);
         if (id != null) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_PrefKeys.driverId, id);
+          debugPrint('[getDriverProfile] ✅ driverId saved: $id');
         }
         return AuthResult(success: true, data: resBody);
       }
@@ -496,7 +557,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/Drivers/{driverId}/stats
   Future<ApiResult<Map<String, dynamic>>> getDriverStats(String driverId) async {
     try {
       final url = ApiConstants.driverStats(driverId);
@@ -1083,15 +1143,13 @@ class AuthService {
       if (response.statusCode == 200) {
         final decoded = _safeJsonDecodeAny(response.body);
         if (decoded is List) {
-          return ApiResult(
-              success: true,
+          return ApiResult(success: true,
               data: {'items': decoded, 'total': decoded.length});
         }
         if (decoded is Map<String, dynamic>) {
           return ApiResult(success: true, data: decoded);
         }
-        return const ApiResult(
-            success: true, data: {'items': [], 'total': 0});
+        return const ApiResult(success: true, data: {'items': [], 'total': 0});
       }
       return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
@@ -1142,11 +1200,8 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  DELIVERIES (Driver)
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/Deliveries — with fallback attempts
   Future<ApiResult<List<dynamic>>> getDeliveries({int status = 2}) async {
     try {
-      // ── Attempt 1: no query params (most permissive) ──
       final uriNoParams = Uri.parse(ApiConstants.deliveries);
       _log('GET DELIVERIES REQUEST (no params)', uriNoParams.toString());
       final r1 = await http
@@ -1154,12 +1209,8 @@ class AuthService {
           .timeout(const Duration(seconds: 30));
       _log('GET DELIVERIES RESPONSE (no params)', uriNoParams.toString(),
           status: r1.statusCode, body: r1.body);
+      if (r1.statusCode == 200) return _parseDeliveriesList(r1.body);
 
-      if (r1.statusCode == 200) {
-        return _parseDeliveriesList(r1.body);
-      }
-
-      // ── Attempt 2: ?status=N (integer) ───────────────
       final uriInt = Uri.parse(ApiConstants.deliveries)
           .replace(queryParameters: {'status': status.toString()});
       _log('GET DELIVERIES REQUEST (status int)', uriInt.toString());
@@ -1168,12 +1219,8 @@ class AuthService {
           .timeout(const Duration(seconds: 30));
       _log('GET DELIVERIES RESPONSE (status int)', uriInt.toString(),
           status: r2.statusCode, body: r2.body);
+      if (r2.statusCode == 200) return _parseDeliveriesList(r2.body);
 
-      if (r2.statusCode == 200) {
-        return _parseDeliveriesList(r2.body);
-      }
-
-      // ── Attempt 3: ?status=Assigned (string) ─────────
       final uriStr = Uri.parse(ApiConstants.deliveries)
           .replace(queryParameters: {'status': 'Assigned'});
       _log('GET DELIVERIES REQUEST (status string)', uriStr.toString());
@@ -1182,10 +1229,7 @@ class AuthService {
           .timeout(const Duration(seconds: 30));
       _log('GET DELIVERIES RESPONSE (status string)', uriStr.toString(),
           status: r3.statusCode, body: r3.body);
-
-      if (r3.statusCode == 200) {
-        return _parseDeliveriesList(r3.body);
-      }
+      if (r3.statusCode == 200) return _parseDeliveriesList(r3.body);
 
       return ApiResult(success: false,
           message: _errorMessage(_safeJsonDecode(r3.body), r3.statusCode));
@@ -1208,7 +1252,6 @@ class AuthService {
     return const ApiResult(success: true, data: []);
   }
 
-  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/accept
   Future<ApiResult<Map<String, dynamic>>> acceptDelivery({
     required String driverId,
     required String deliveryId,
@@ -1231,7 +1274,6 @@ class AuthService {
     }
   }
 
-  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/reject
   Future<ApiResult<Map<String, dynamic>>> rejectDelivery({
     required String driverId,
     required String deliveryId,
@@ -1257,8 +1299,6 @@ class AuthService {
     }
   }
 
-  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/pickup
-  /// multipart/form-data: photo (optional), notes (optional)
   Future<ApiResult<Map<String, dynamic>>> confirmPickup({
     required String driverId,
     required String deliveryId,
@@ -1270,28 +1310,23 @@ class AuthService {
       final url = ApiConstants.confirmPickup(driverId, deliveryId);
       _log('CONFIRM PICKUP REQUEST', url,
           extra: 'driverId: $driverId | deliveryId: $deliveryId');
-
       final request = http.MultipartRequest('POST', Uri.parse(url));
       final token = await getAccessToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
         request.headers['Accept'] = 'application/json';
       }
-      if (notes != null && notes.isNotEmpty) {
-        request.fields['notes'] = notes;
-      }
+      if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
           'photo', photoBytes,
           filename: photoFileName ?? 'pickup_photo.jpg',
         ));
       }
-
       final streamed = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('CONFIRM PICKUP RESPONSE', url,
           status: response.statusCode, body: response.body);
-
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
@@ -1302,9 +1337,6 @@ class AuthService {
     }
   }
 
-  /// POST /api/Drivers/{driverId}/deliveries/{deliveryId}/complete
-  /// multipart/form-data: recipientName (REQUIRED), photo (optional),
-  ///                       signature (optional), notes (optional)
   Future<ApiResult<Map<String, dynamic>>> completeDelivery({
     required String driverId,
     required String deliveryId,
@@ -1319,18 +1351,14 @@ class AuthService {
       final url = ApiConstants.completeDelivery(driverId, deliveryId);
       _log('COMPLETE DELIVERY REQUEST', url,
           extra: 'recipientName: $recipientName');
-
       final request = http.MultipartRequest('POST', Uri.parse(url));
       final token = await getAccessToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
         request.headers['Accept'] = 'application/json';
       }
-
       request.fields['recipientName'] = recipientName;
-      if (notes != null && notes.isNotEmpty) {
-        request.fields['notes'] = notes;
-      }
+      if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
           'photo', photoBytes,
@@ -1343,12 +1371,10 @@ class AuthService {
           filename: signatureFileName ?? 'signature.png',
         ));
       }
-
       final streamed = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('COMPLETE DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
-
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
@@ -1362,9 +1388,6 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  EARNINGS
   // ══════════════════════════════════════════════════════
-
-  /// GET /api/Earnings/drivers/{driverId}/summary?period=week
-  /// period: 'day' | 'week' | 'month'
   Future<ApiResult<Map<String, dynamic>>> getEarningsSummary({
     required String driverId,
     String period = 'week',
@@ -1389,7 +1412,6 @@ class AuthService {
     }
   }
 
-  /// GET /api/Earnings/drivers/{driverId}?fromDate=...&toDate=...
   Future<ApiResult<Map<String, dynamic>>> getEarningsByDateRange({
     required String driverId,
     required String fromDate,
