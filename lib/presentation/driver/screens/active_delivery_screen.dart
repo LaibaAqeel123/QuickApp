@@ -8,26 +8,9 @@ import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.da
 import 'package:image_picker/image_picker.dart';
 import 'dart:ui' as ui;
 
-// ── Delivery status constants ──────────────────────────────
-// 2=Assigned, 3=Accepted, 4=PickedUp, 6=Delivered
-class _DS {
-  static const int accepted = 3;
-  static const int pickedUp = 4;
-}
-
-/// ActiveDeliveryScreen
-///
-/// KEY CHANGE: This screen now requires [delivery] to be passed explicitly
-/// after the driver taps "Accept" on AvailableJobsScreen. It does NOT
-/// auto-fetch status=3 deliveries on init anymore — that was causing it to
-/// show deliveries the driver never accepted (e.g. assigned/expired ones
-/// that happened to have the driverId set by the backend).
-///
-/// Polling (every 30s) is still done to refresh the delivery state,
-/// but only AFTER the driver has explicitly accepted and [delivery] is set.
 class ActiveDeliveryScreen extends StatefulWidget {
-  /// The delivery map passed after driver explicitly taps Accept.
-  /// If null, screen shows "No Active Delivery".
+  /// Passed explicitly when driver taps Accept on AvailableJobsScreen.
+  /// If null, screen will auto-fetch any in-progress delivery from the backend.
   final Map<String, dynamic>? delivery;
   final String? driverId;
 
@@ -38,19 +21,30 @@ class ActiveDeliveryScreen extends StatefulWidget {
 }
 
 class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
-  bool    _isLoading    = false; // No longer loads on init — delivery is passed in
+  bool    _isLoading    = false;
   bool    _isSubmitting = false;
   String? _errorMsg;
   String? _driverId;
   Map<String, dynamic>? _activeDelivery;
-  int     _step = 0; // 0=Accepted(heading to pickup), 1=PickedUp(heading to delivery), 2=Delivered
-  Timer?  _pollTimer;
 
-  // Image picker
+  // 0 = Accepted (heading to pickup)
+  // 1 = PickedUp (heading to delivery)
+  // 2 = Delivered
+  int _step = 0;
+
+  Timer? _pollTimer;
+
   final ImagePicker _picker = ImagePicker();
 
-  static const _stepLabels = ['Heading to Pickup', 'Heading to Delivery', 'Delivered'];
+  static const _stepLabels = [
+    'Heading to Pickup',
+    'Heading to Delivery',
+    'Delivered',
+  ];
 
+  // ──────────────────────────────────────────────────────
+  //  LIFECYCLE
+  // ──────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -63,42 +57,107 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     super.dispose();
   }
 
+  // ──────────────────────────────────────────────────────
+  //  INIT
+  //
+  //  TWO PATHS:
+  //  A) delivery was passed (driver just tapped Accept)  → use it directly.
+  //  B) delivery is null (app reopened / tab switched)   → auto-fetch from
+  //     backend and find any Accepted or PickedUp delivery belonging to this
+  //     driver. This is what was missing before and caused the stuck delivery
+  //     (f75f59b6, status=PickedUp) to never appear after app restart.
+  // ──────────────────────────────────────────────────────
   Future<void> _init() async {
     _driverId = widget.driverId ?? await AuthService.instance.getSavedDriverId();
 
-    // ── KEY FIX ──────────────────────────────────────────────
-    // Only use the delivery that was explicitly passed after the driver
-    // pressed Accept. Do NOT auto-fetch from the API on init, because
-    // the backend may have assigned a delivery to this driver (status=3)
-    // that the driver has not yet accepted in the app.
-    //
-    // If no delivery was passed, the screen shows "No Active Delivery".
-    // ────────────────────────────────────────────────────────
     if (widget.delivery != null) {
-      final deliveryStatus = (widget.delivery!['deliveryStatus'] ??
+      // PATH A — delivery explicitly passed after Accept tap.
+      final rawStatus = (widget.delivery!['deliveryStatus'] ??
               widget.delivery!['status'] ?? '')
           .toString()
           .toLowerCase();
 
-      // Determine initial step from status
-      int initialStep = 0;
-      if (deliveryStatus == '4' ||
-          deliveryStatus == 'pickedup' ||
-          deliveryStatus == 'picked_up') {
-        initialStep = 1;
-      }
+      final int initialStep =
+          (rawStatus == 'pickedup' || rawStatus == 'picked_up' || rawStatus == '4')
+              ? 1
+              : 0;
 
       setState(() {
         _activeDelivery = widget.delivery;
         _step           = initialStep;
       });
 
-      // Start polling to keep delivery state fresh
       _startPolling();
+      return;
     }
-    // If widget.delivery is null: _activeDelivery stays null → shows NoActiveDelivery UI
+
+    // PATH B — no delivery passed; check backend for any in-progress delivery.
+    setState(() { _isLoading = true; _errorMsg = null; });
+
+    final result = await AuthService.instance.getDeliveries(status: 2);
+    if (!mounted) return;
+
+    if (result.success && result.data != null) {
+      final all = result.data!.whereType<Map<String, dynamic>>().toList();
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  ACTIVE DELIVERY SCREEN — AUTO-FETCH');
+      debugPrint('║  total deliveries from API: ${all.length}');
+      debugPrint('║  looking for driverId: $_driverId');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      Map<String, dynamic>? found;
+      int foundStep = 0;
+
+      // First priority: Accepted (status = 3)
+      found = all.where((d) {
+        final status = (d['deliveryStatus'] ?? d['status'] ?? '')
+            .toString()
+            .toLowerCase();
+        final dId = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+        final isAccepted = status == 'accepted' || status == '3';
+        debugPrint('[AutoFetch] id=${d['deliveryId']} status=$status driverMatch=${dId == _driverId} isAccepted=$isAccepted');
+        return isAccepted && dId == _driverId;
+      }).firstOrNull;
+
+      // Second priority: PickedUp (status = 4)
+      if (found == null) {
+        found = all.where((d) {
+          final status = (d['deliveryStatus'] ?? d['status'] ?? '')
+              .toString()
+              .toLowerCase();
+          final dId = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+          final isPickedUp =
+              status == 'pickedup' || status == 'picked_up' || status == '4';
+          debugPrint('[AutoFetch] id=${d['deliveryId']} status=$status driverMatch=${dId == _driverId} isPickedUp=$isPickedUp');
+          return isPickedUp && dId == _driverId;
+        }).firstOrNull;
+
+        if (found != null) foundStep = 1;
+      }
+
+      debugPrint('[AutoFetch] found delivery: ${found?['deliveryId'] ?? 'none'} at step $foundStep');
+
+      setState(() {
+        _activeDelivery = found;
+        _step           = foundStep;
+        _isLoading      = false;
+      });
+
+      if (found != null) _startPolling();
+    } else {
+      setState(() {
+        _isLoading = false;
+        _errorMsg  = result.message ?? 'Failed to load delivery.';
+      });
+    }
   }
 
+  // ──────────────────────────────────────────────────────
+  //  POLLING — refreshes every 30 seconds after delivery is active.
+  //  Looks for the specific deliveryId in Accepted or PickedUp lists
+  //  so we catch backend status changes (e.g. backend force-updates status).
+  // ──────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
@@ -107,56 +166,60 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     );
   }
 
-  // ══════════════════════════════════════════════════════
-  //  REFRESH — only called AFTER delivery is accepted.
-  //  Re-fetches the specific delivery by its ID to get
-  //  the latest status (e.g. if backend updated it).
-  // ══════════════════════════════════════════════════════
   Future<void> _refreshDeliveryState({bool silent = false}) async {
-    if (!mounted || _activeDelivery == null) return;
-    if (_isSubmitting) return; // Don't refresh while submitting
+    if (!mounted || _activeDelivery == null || _isSubmitting) return;
 
-    final deliveryId = (_activeDelivery!['deliveryId'] ??
-            _activeDelivery!['id'] ?? '')
-        .toString();
-    if (deliveryId.isEmpty) return;
+    final deliveryId =
+        (_activeDelivery!['deliveryId'] ?? _activeDelivery!['id'] ?? '')
+            .toString();
+    if (deliveryId.isEmpty || _driverId == null) return;
 
-    // Fetch status=3 (Accepted) deliveries and look for our specific ID
-    final r3 = await AuthService.instance.getDeliveries(status: _DS.accepted);
-    if (!mounted) return;
+    // Fetch all deliveries (API returns all regardless of status param —
+    // we filter client-side by deliveryId + driverId + status string).
+    final result = await AuthService.instance.getDeliveries(status: 2);
+    if (!mounted || _isSubmitting) return;
 
-    if (r3.success && r3.data != null) {
-      final match = r3.data!
-          .whereType<Map<String, dynamic>>()
-          .where((d) =>
-              (d['deliveryId'] ?? d['id'])?.toString() == deliveryId &&
-              (d['driverId'] ?? d['driver_id'])?.toString() == _driverId)
-          .firstOrNull;
+    if (!result.success || result.data == null) return;
 
-      if (match != null && !_isSubmitting) {
-        if (mounted) setState(() { _activeDelivery = match; _step = 0; });
-        return;
-      }
+    final all = result.data!.whereType<Map<String, dynamic>>().toList();
+
+    // Check if our delivery is now Accepted (step 0)
+    final accepted = all.where((d) {
+      final status = (d['deliveryStatus'] ?? d['status'] ?? '')
+          .toString()
+          .toLowerCase();
+      final dId   = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+      final id    = (d['deliveryId'] ?? d['id'] ?? '').toString();
+      return id == deliveryId &&
+          dId == _driverId &&
+          (status == 'accepted' || status == '3');
+    }).firstOrNull;
+
+    if (accepted != null) {
+      setState(() { _activeDelivery = accepted; _step = 0; });
+      return;
     }
 
-    // Check status=4 (PickedUp)
-    final r4 = await AuthService.instance.getDeliveries(status: _DS.pickedUp);
-    if (!mounted) return;
+    // Check if our delivery is now PickedUp (step 1)
+    final pickedUp = all.where((d) {
+      final status = (d['deliveryStatus'] ?? d['status'] ?? '')
+          .toString()
+          .toLowerCase();
+      final dId   = (d['driverId'] ?? d['driver_id'] ?? '').toString();
+      final id    = (d['deliveryId'] ?? d['id'] ?? '').toString();
+      return id == deliveryId &&
+          dId == _driverId &&
+          (status == 'pickedup' || status == 'picked_up' || status == '4');
+    }).firstOrNull;
 
-    if (r4.success && r4.data != null) {
-      final match = r4.data!
-          .whereType<Map<String, dynamic>>()
-          .where((d) =>
-              (d['deliveryId'] ?? d['id'])?.toString() == deliveryId &&
-              (d['driverId'] ?? d['driver_id'])?.toString() == _driverId)
-          .firstOrNull;
-
-      if (match != null && !_isSubmitting) {
-        if (mounted) setState(() { _activeDelivery = match; _step = 1; });
-      }
+    if (pickedUp != null) {
+      setState(() { _activeDelivery = pickedUp; _step = 1; });
     }
   }
 
+  // ──────────────────────────────────────────────────────
+  //  HELPERS
+  // ──────────────────────────────────────────────────────
   String _field(List<String> keys, [String fallback = 'N/A']) {
     final d = _activeDelivery;
     if (d == null) return fallback;
@@ -164,28 +227,42 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     return fallback;
   }
 
-  // ══════════════════════════════════════════════════════
-  //  IMAGE PICKER HELPERS
-  // ══════════════════════════════════════════════════════
   Future<XFile?> _pickImage(ImageSource source) async {
     try {
-      final XFile? image = await _picker.pickImage(
+      return await _picker.pickImage(
         source: source,
         maxWidth: 1024,
         maxHeight: 1024,
         imageQuality: 80,
       );
-      return image;
     } catch (e) {
       _snack('Error picking image: $e', isError: true);
       return null;
     }
   }
 
-  // ══════════════════════════════════════════════════════
-  //  CONFIRM PICKUP SHEET
+  void _snack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? AppColors.error : AppColors.success,
+    ));
+  }
+
+  Widget _handle() => Center(
+        child: Container(
+          width: 40,
+          height: 4,
+          decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(2)),
+        ),
+      );
+
+  // ──────────────────────────────────────────────────────
+  //  CONFIRM PICKUP BOTTOM SHEET
   //  POST /api/Drivers/{driverId}/deliveries/{deliveryId}/pickup
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
   void _showPickupSheet() {
     String notes = '';
     XFile? selectedPhoto;
@@ -199,13 +276,16 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         bool sub = false;
         return Padding(
           padding: EdgeInsets.only(
-              left: 20, right: 20, top: 20,
+              left: 20,
+              right: 20,
+              top: 20,
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             _handle(),
             const SizedBox(height: 16),
             const Text('Confirm Pickup',
-                style: TextStyle(fontSize: 18,
+                style: TextStyle(
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: AppColors.textPrimary)),
             const SizedBox(height: 4),
@@ -213,13 +293,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
             const SizedBox(height: 16),
 
-            // Photo selection
+            // Photo buttons
             Row(children: [
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () async {
-                    final photo = await _pickImage(ImageSource.camera);
-                    setBS(() => selectedPhoto = photo);
+                    final p = await _pickImage(ImageSource.camera);
+                    setBS(() => selectedPhoto = p);
                   },
                   icon: const Icon(Icons.camera_alt),
                   label: const Text('Camera'),
@@ -229,8 +309,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () async {
-                    final photo = await _pickImage(ImageSource.gallery);
-                    setBS(() => selectedPhoto = photo);
+                    final p = await _pickImage(ImageSource.gallery);
+                    setBS(() => selectedPhoto = p);
                   },
                   icon: const Icon(Icons.photo_library),
                   label: const Text('Gallery'),
@@ -253,17 +333,15 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton.icon(
-                    onPressed: () => setBS(() => selectedPhoto = null),
-                    icon: const Icon(Icons.close, size: 16),
-                    label: const Text('Remove'),
-                    style: TextButton.styleFrom(foregroundColor: AppColors.error),
-                  ),
-                ],
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => setBS(() => selectedPhoto = null),
+                  icon: const Icon(Icons.close, size: 16),
+                  label: const Text('Remove'),
+                  style: TextButton.styleFrom(foregroundColor: AppColors.error),
+                ),
               ),
             ],
 
@@ -282,16 +360,20 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               width: double.infinity,
               height: 52,
               child: ElevatedButton(
-                onPressed: sub ? null : () async {
-                  setBS(() => sub = true);
-                  Navigator.of(ctx).pop();
-                  await _doConfirmPickup(
-                    notes: notes.trim(),
-                    photo: selectedPhoto,
-                  );
-                },
+                onPressed: sub
+                    ? null
+                    : () async {
+                        setBS(() => sub = true);
+                        Navigator.of(ctx).pop();
+                        await _doConfirmPickup(
+                          notes: notes.trim(),
+                          photo: selectedPhoto,
+                        );
+                      },
                 child: sub
-                    ? const SizedBox(width: 22, height: 22,
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2.5))
                     : const Text('Confirm Pickup',
@@ -326,10 +408,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (photo != null) photoBytes = await photo.readAsBytes();
 
     final result = await AuthService.instance.confirmPickup(
-      driverId: _driverId!,
-      deliveryId: deliveryId.toString(),
-      notes: notes,
-      photoBytes: photoBytes,
+      driverId:      _driverId!,
+      deliveryId:    deliveryId.toString(),
+      notes:         notes,
+      photoBytes:    photoBytes,
       photoFileName: photo?.name,
     );
 
@@ -342,6 +424,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
     if (!mounted) return;
     setState(() => _isSubmitting = false);
+
     if (result.success) {
       setState(() => _step = 1);
       _snack('Items picked up! Head to delivery location. 🚗');
@@ -350,15 +433,16 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
-  // ══════════════════════════════════════════════════════
-  //  COMPLETE DELIVERY SHEET WITH SIGNATURE PAD
+  // ──────────────────────────────────────────────────────
+  //  COMPLETE DELIVERY BOTTOM SHEET
   //  POST /api/Drivers/{driverId}/deliveries/{deliveryId}/complete
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
   void _showCompleteSheet() {
     final recipientCtrl = TextEditingController();
-    String notes = '';
+    String  notes = '';
     String? recipientError;
-    XFile? selectedPhoto;
+    XFile?  selectedPhoto;
+    final   signatureController = SignaturePadController();
 
     showModalBottomSheet(
       context: context,
@@ -366,225 +450,249 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setBS) {
-        bool sub = false;
+        bool sub            = false;
         bool showSignaturePad = false;
-        SignaturePadController signatureController = SignaturePadController();
 
         return Padding(
           padding: EdgeInsets.only(
-              left: 20, right: 20, top: 20,
+              left: 20,
+              right: 20,
+              top: 20,
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            _handle(),
-            const SizedBox(height: 16),
-            const Text('Complete Delivery',
-                style: TextStyle(fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 4),
-            const Text('Confirm delivery and get recipient details.',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
-            const SizedBox(height: 16),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              _handle(),
+              const SizedBox(height: 16),
+              const Text('Complete Delivery',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              const Text('Confirm delivery and get recipient details.',
+                  style: TextStyle(
+                      fontSize: 13, color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
 
-            // REQUIRED recipient name
-            TextField(
-              controller: recipientCtrl,
-              decoration: InputDecoration(
-                labelText: 'Recipient Name *',
-                hintText: 'e.g. John Smith',
-                border: const OutlineInputBorder(),
-                errorText: recipientError,
-              ),
-              onChanged: (_) {
-                if (recipientError != null) {
-                  setBS(() => recipientError = null);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
-
-            // Photo section
-            const Text('Delivery Photo (optional)',
-                style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Row(children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    final photo = await _pickImage(ImageSource.camera);
-                    setBS(() => selectedPhoto = photo);
-                  },
-                  icon: const Icon(Icons.camera_alt),
-                  label: const Text('Camera'),
+              // REQUIRED recipient name
+              TextField(
+                controller: recipientCtrl,
+                decoration: InputDecoration(
+                  labelText: 'Recipient Name *',
+                  hintText: 'e.g. John Smith',
+                  border: const OutlineInputBorder(),
+                  errorText: recipientError,
                 ),
+                onChanged: (_) {
+                  if (recipientError != null) {
+                    setBS(() => recipientError = null);
+                  }
+                },
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    final photo = await _pickImage(ImageSource.gallery);
-                    setBS(() => selectedPhoto = photo);
-                  },
-                  icon: const Icon(Icons.photo_library),
-                  label: const Text('Gallery'),
-                ),
-              ),
-            ]),
+              const SizedBox(height: 16),
 
-            if (selectedPhoto != null) ...[
+              // Photo
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Delivery Photo (optional)',
+                    style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
               const SizedBox(height: 8),
-              Container(
-                height: 80,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.border),
-                  image: DecorationImage(
-                    image: FileImage(File(selectedPhoto!.path)),
-                    fit: BoxFit.cover,
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final p = await _pickImage(ImageSource.camera);
+                      setBS(() => selectedPhoto = p);
+                    },
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Camera'),
                   ),
                 ),
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton.icon(
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final p = await _pickImage(ImageSource.gallery);
+                      setBS(() => selectedPhoto = p);
+                    },
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Gallery'),
+                  ),
+                ),
+              ]),
+
+              if (selectedPhoto != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  height: 80,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.border),
+                    image: DecorationImage(
+                      image: FileImage(File(selectedPhoto!.path)),
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
                     onPressed: () => setBS(() => selectedPhoto = null),
                     icon: const Icon(Icons.close, size: 16),
                     label: const Text('Remove'),
                     style: TextButton.styleFrom(
                         foregroundColor: AppColors.error),
                   ),
-                ],
-              ),
-            ],
-
-            const SizedBox(height: 16),
-
-            // Signature section
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Signature (optional)',
-                    style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600)),
-                if (signatureController.hasSignature)
-                  TextButton(
-                    onPressed: () {
-                      signatureController.clear();
-                      setBS(() {});
-                    },
-                    child: const Text('Clear',
-                        style: TextStyle(color: AppColors.error)),
-                  ),
+                ),
               ],
-            ),
-            const SizedBox(height: 8),
 
-            if (!showSignaturePad && !signatureController.hasSignature)
-              OutlinedButton.icon(
-                onPressed: () => setBS(() => showSignaturePad = true),
-                icon: const Icon(Icons.draw),
-                label: const Text('Draw Signature'),
-              ),
+              const SizedBox(height: 16),
 
-            if (showSignaturePad) ...[
-              Container(
-                height: 150,
-                decoration: BoxDecoration(
-                  border: Border.all(color: AppColors.border),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: SignaturePad(
-                    controller: signatureController,
-                    onDrawEnd: () => setBS(() {}),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
+              // Signature
               Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  TextButton(
-                    onPressed: () {
-                      signatureController.clear();
-                      setBS(() {});
-                    },
-                    child: const Text('Clear'),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: () => setBS(() => showSignaturePad = false),
-                    child: const Text('Done'),
-                  ),
+                  const Text('Signature (optional)',
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                  if (signatureController.hasSignature)
+                    TextButton(
+                      onPressed: () {
+                        signatureController.clear();
+                        setBS(() {});
+                      },
+                      child: const Text('Clear',
+                          style: TextStyle(color: AppColors.error)),
+                    ),
                 ],
               ),
-            ],
-
-            if (!showSignaturePad && signatureController.hasSignature) ...[
-              Container(
-                height: 60,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: SignaturePreview(controller: signatureController),
-                ),
-              ),
               const SizedBox(height: 8),
-            ],
 
-            const SizedBox(height: 16),
+              if (!showSignaturePad && !signatureController.hasSignature)
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => setBS(() => showSignaturePad = true),
+                    icon: const Icon(Icons.draw),
+                    label: const Text('Draw Signature'),
+                  ),
+                ),
 
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Notes (optional)',
-                hintText: 'e.g. Delivered successfully',
-                border: OutlineInputBorder(),
+              if (showSignaturePad) ...[
+                Container(
+                  height: 150,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppColors.border),
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.white,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SignaturePad(
+                      controller: signatureController,
+                      onDrawEnd: () => setBS(() {}),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        signatureController.clear();
+                        setBS(() {});
+                      },
+                      child: const Text('Clear'),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () => setBS(() => showSignaturePad = false),
+                      child: const Text('Done'),
+                    ),
+                  ],
+                ),
+              ],
+
+              if (!showSignaturePad && signatureController.hasSignature) ...[
+                Container(
+                  height: 60,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.border),
+                    color: Colors.white,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SignaturePreview(controller: signatureController),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+
+              const SizedBox(height: 16),
+
+              TextField(
+                decoration: const InputDecoration(
+                  labelText: 'Notes (optional)',
+                  hintText: 'e.g. Delivered successfully',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) => notes = v,
+                maxLines: 2,
               ),
-              onChanged: (v) => notes = v,
-              maxLines: 2,
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: ElevatedButton(
-                onPressed: sub ? null : () async {
-                  final name = recipientCtrl.text.trim();
-                  if (name.isEmpty) {
-                    setBS(() => recipientError = 'Recipient name is required');
-                    return;
-                  }
-                  setBS(() => sub = true);
-                  Navigator.of(ctx).pop();
-                  await _doCompleteDelivery(
-                    recipientName: name,
-                    notes: notes.trim(),
-                    photo: selectedPhoto,
-                    signatureBytes: signatureController.hasSignature
-                        ? await signatureController.getSignatureBytes()
-                        : null,
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.success),
-                child: sub
-                    ? const SizedBox(width: 22, height: 22,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2.5))
-                    : const Text('Complete Delivery',
-                        style: TextStyle(fontSize: 16)),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: sub
+                      ? null
+                      : () async {
+                          final name = recipientCtrl.text.trim();
+                          if (name.isEmpty) {
+                            setBS(() => recipientError =
+                                'Recipient name is required');
+                            return;
+                          }
+                          setBS(() => sub = true);
+
+                          // Capture signature bytes before closing sheet
+                          List<int>? sigBytes;
+                          if (signatureController.hasSignature) {
+                            sigBytes =
+                                await signatureController.getSignatureBytes();
+                          }
+
+                          Navigator.of(ctx).pop();
+                          await _doCompleteDelivery(
+                            recipientName:  name,
+                            notes:          notes.trim(),
+                            photo:          selectedPhoto,
+                            signatureBytes: sigBytes,
+                          );
+                        },
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.success),
+                  child: sub
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2.5))
+                      : const Text('Complete Delivery',
+                          style: TextStyle(fontSize: 16)),
+                ),
               ),
-            ),
-          ]),
+
+              const SizedBox(height: 8),
+            ]),
+          ),
         );
       }),
     );
@@ -592,8 +700,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
   Future<void> _doCompleteDelivery({
     required String recipientName,
-    String? notes,
-    XFile? photo,
+    String?  notes,
+    XFile?   photo,
     List<int>? signatureBytes,
   }) async {
     final deliveryId =
@@ -619,13 +727,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (photo != null) photoBytes = await photo.readAsBytes();
 
     final result = await AuthService.instance.completeDelivery(
-      driverId: _driverId!,
-      deliveryId: deliveryId.toString(),
-      recipientName: recipientName,
-      notes: notes,
-      photoBytes: photoBytes,
-      photoFileName: photo?.name,
-      signatureBytes: signatureBytes,
+      driverId:          _driverId!,
+      deliveryId:        deliveryId.toString(),
+      recipientName:     recipientName,
+      notes:             notes,
+      photoBytes:        photoBytes,
+      photoFileName:     photo?.name,
+      signatureBytes:    signatureBytes,
       signatureFileName: 'signature.png',
     );
 
@@ -638,6 +746,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
     if (!mounted) return;
     setState(() => _isSubmitting = false);
+
     if (result.success) {
       setState(() => _step = 2);
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -649,9 +758,85 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
+  //  SUCCESS DIALOG
+  // ──────────────────────────────────────────────────────
+  void _showSuccessDialog(Map<String, dynamic>? responseData) {
+    // Try to show earnings from the complete-delivery response first,
+    // then fall back to whatever is on _activeDelivery.
+    final earnRaw = responseData?['totalAmount'] ??
+        responseData?['driverEarnings'] ??
+        _activeDelivery?['driverEarnings'] ??
+        _activeDelivery?['payment'];
+    final paymentStr =
+        earnRaw != null ? '£${(earnRaw as num).toStringAsFixed(2)}' : '';
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+                color: AppColors.success.withOpacity(0.1),
+                shape: BoxShape.circle),
+            child: const Icon(Icons.check_circle,
+                size: 60, color: AppColors.success),
+          ),
+          const SizedBox(height: 24),
+          const Text('Delivery Completed!',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
+          if (paymentStr.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('$paymentStr earned',
+                style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.success)),
+          ],
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                final driverId = _driverId ??
+                    await AuthService.instance.getSavedDriverId() ??
+                    '';
+                if (!mounted) return;
+                Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) =>
+                            EarningsScreen(driverId: driverId)));
+              },
+              child: const Text('View Earnings'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.pop(context);
+              },
+              child: const Text('Back to Jobs'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ──────────────────────────────────────────────────────
   //  BUILD
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final appBar = AppBar(
@@ -664,10 +849,12 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () => _refreshDeliveryState(),
+            tooltip: 'Refresh',
           ),
       ],
     );
 
+    // Loading
     if (_isLoading) {
       return Scaffold(
           backgroundColor: AppColors.background,
@@ -675,6 +862,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           body: const Center(child: CircularProgressIndicator()));
     }
 
+    // Error with no delivery
     if (_errorMsg != null && _activeDelivery == null) {
       return Scaffold(
           backgroundColor: AppColors.background,
@@ -695,13 +883,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                                 color: AppColors.textSecondary)),
                         const SizedBox(height: 24),
                         ElevatedButton.icon(
-                            onPressed: () => _refreshDeliveryState(),
+                            onPressed: _init,
                             icon: const Icon(Icons.refresh),
                             label: const Text('Retry')),
                       ]))));
     }
 
-    // No delivery was passed (driver hasn't accepted anything yet)
+    // No delivery found
     if (_activeDelivery == null) {
       return Scaffold(
           backgroundColor: AppColors.background,
@@ -709,15 +897,14 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           body: const _NoActiveDelivery());
     }
 
-    // ── Main UI ───────────────────────────────────────
+    // ── Main content ──────────────────────────────────
     final orderNum        = _field(['orderNumber', 'order_number'], 'Active Delivery');
     final pickupAddress   = _field(['pickupAddress', 'pickup_address']);
     final deliveryAddress = _field(['deliveryAddress', 'delivery_address']);
-    final distRaw         = _activeDelivery?['distanceKm'] ?? _activeDelivery?['distance_km'];
-    final distanceStr     = distRaw != null
-        ? '${(distRaw as num).toStringAsFixed(1)} km away'
-        : '';
-    final earnRaw         = _activeDelivery?['driverEarnings'] ??
+    final distRaw  = _activeDelivery?['distanceKm'] ?? _activeDelivery?['distance_km'];
+    final distanceStr =
+        distRaw != null ? '${(distRaw as num).toStringAsFixed(1)} km away' : '';
+    final earnRaw  = _activeDelivery?['driverEarnings'] ??
         _activeDelivery?['payment'] ??
         _activeDelivery?['earnings'];
     final paymentStr =
@@ -786,9 +973,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     Container(
                       padding: const EdgeInsets.symmetric(
                           vertical: 14, horizontal: 20),
-                      color: _step == 1
-                          ? AppColors.success
-                          : AppColors.primary,
+                      color: _step == 1 ? AppColors.success : AppColors.primary,
                       child: Column(children: [
                         Text(_stepLabels[_step],
                             style: const TextStyle(
@@ -798,12 +983,11 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                         const SizedBox(height: 4),
                         Text(orderNum,
                             style: const TextStyle(
-                                fontSize: 13,
-                                color: AppColors.white)),
+                                fontSize: 13, color: AppColors.white)),
                       ]),
                     ),
 
-                    // Step progress
+                    // Step progress indicator
                     Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 20, vertical: 16),
@@ -837,8 +1021,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
                     // Pickup card
                     Padding(
-                      padding:
-                          const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                       child: _DeliveryStep(
                         icon: Icons.store,
                         title: 'Pickup Location',
@@ -847,15 +1030,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                         isActive: _step == 0,
                         buttonText: 'Confirm Pickup',
                         buttonColor: AppColors.primary,
-                        onButtonPressed:
-                            _step == 0 ? _showPickupSheet : null,
+                        onButtonPressed: _step == 0 ? _showPickupSheet : null,
                       ),
                     ),
 
                     // Delivery card
                     Padding(
-                      padding:
-                          const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                       child: _DeliveryStep(
                         icon: Icons.location_on,
                         title: 'Delivery Location',
@@ -864,25 +1045,21 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                         isActive: _step == 1,
                         buttonText: 'Complete Delivery',
                         buttonColor: AppColors.success,
-                        onButtonPressed:
-                            _step == 1 ? _showCompleteSheet : null,
+                        onButtonPressed: _step == 1 ? _showCompleteSheet : null,
                       ),
                     ),
 
                     // Info card
                     Padding(
-                      padding:
-                          const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                       child: Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                             color: AppColors.surface,
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                                color: AppColors.border)),
+                            border: Border.all(color: AppColors.border)),
                         child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text('Delivery Details',
                                   style: TextStyle(
@@ -913,90 +1090,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ])),
     );
   }
-
-  Widget _handle() => Container(
-      width: 40,
-      height: 4,
-      decoration: BoxDecoration(
-          color: AppColors.border,
-          borderRadius: BorderRadius.circular(2)));
-
-  void _snack(String msg, {bool isError = false}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      backgroundColor: isError ? AppColors.error : AppColors.success,
-    ));
-  }
-
-  void _showSuccessDialog(Map<String, dynamic>? responseData) {
-    final earnRaw =
-        _activeDelivery?['driverEarnings'] ?? _activeDelivery?['payment'];
-    final paymentStr =
-        earnRaw != null ? '£${(earnRaw as num).toStringAsFixed(2)}' : '';
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-                color: AppColors.success.withOpacity(0.1),
-                shape: BoxShape.circle),
-            child: const Icon(Icons.check_circle,
-                size: 60, color: AppColors.success),
-          ),
-          const SizedBox(height: 24),
-          const Text('Delivery Completed!',
-              style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          if (paymentStr.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text('$paymentStr earned',
-                style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.success)),
-          ],
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(ctx);
-                final driverId = _driverId ??
-                    await AuthService.instance.getSavedDriverId() ??
-                    '';
-                if (!mounted) return;
-                Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) =>
-                            EarningsScreen(driverId: driverId)));
-              },
-              child: const Text('View Earnings'),
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: TextButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                Navigator.pop(context);
-              },
-              child: const Text('Back to Jobs'),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1013,24 +1106,23 @@ class SignaturePadController {
   Future<List<int>> getSignatureBytes() async {
     if (_points.isEmpty) return [];
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder);
-    const size = Size(400, 150);
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
+    final canvas   = Canvas(recorder);
+    const size     = Size(400, 150);
+    canvas.drawRect(
+        Rect.fromLTWH(0, 0, size.width, size.height),
         Paint()..color = Colors.white);
     final paint = Paint()
-      ..color = Colors.black
+      ..color      = Colors.black
       ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeJoin = StrokeJoin.round
-      ..strokeCap = StrokeCap.round;
+      ..style       = PaintingStyle.stroke
+      ..strokeJoin  = StrokeJoin.round
+      ..strokeCap   = StrokeCap.round;
     for (int i = 0; i < _points.length - 1; i++) {
       canvas.drawLine(_points[i], _points[i + 1], paint);
     }
-    final picture = recorder.endRecording();
-    final img =
-        await picture.toImage(size.width.toInt(), size.height.toInt());
-    final pngBytes =
-        await img.toByteData(format: ui.ImageByteFormat.png);
+    final picture  = recorder.endRecording();
+    final img      = await picture.toImage(size.width.toInt(), size.height.toInt());
+    final pngBytes = await img.toByteData(format: ui.ImageByteFormat.png);
     return pngBytes?.buffer.asUint8List() ?? [];
   }
 }
@@ -1041,9 +1133,7 @@ class SignaturePadController {
 class SignaturePad extends StatefulWidget {
   final SignaturePadController controller;
   final VoidCallback? onDrawEnd;
-
-  const SignaturePad(
-      {super.key, required this.controller, this.onDrawEnd});
+  const SignaturePad({super.key, required this.controller, this.onDrawEnd});
 
   @override
   State<SignaturePad> createState() => _SignaturePadState();
@@ -1051,39 +1141,38 @@ class SignaturePad extends StatefulWidget {
 
 class _SignaturePadState extends State<SignaturePad> {
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onPanUpdate: (details) {
-        setState(() => widget.controller.addPoint(details.localPosition));
-      },
-      onPanEnd: (_) => widget.onDrawEnd?.call(),
-      child: CustomPaint(
-        size: const Size(double.infinity, 150),
-        painter: _SignaturePainter(controller: widget.controller),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => GestureDetector(
+        onPanUpdate: (details) {
+          setState(
+              () => widget.controller.addPoint(details.localPosition));
+        },
+        onPanEnd: (_) => widget.onDrawEnd?.call(),
+        child: CustomPaint(
+          size: const Size(double.infinity, 150),
+          painter: _SignaturePainter(controller: widget.controller),
+        ),
+      );
 }
 
 class _SignaturePainter extends CustomPainter {
   final SignaturePadController controller;
-  _SignaturePainter({required this.controller}) : super();
+  _SignaturePainter({required this.controller});
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.black
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeJoin = StrokeJoin.round
-      ..strokeCap = StrokeCap.round;
+      ..color       = Colors.black
+      ..strokeWidth  = 2
+      ..style        = PaintingStyle.stroke
+      ..strokeJoin   = StrokeJoin.round
+      ..strokeCap    = StrokeCap.round;
     for (int i = 0; i < controller.points.length - 1; i++) {
       canvas.drawLine(controller.points[i], controller.points[i + 1], paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _SignaturePainter oldDelegate) => true;
+  bool shouldRepaint(covariant _SignaturePainter old) => true;
 }
 
 class SignaturePreview extends StatelessWidget {
@@ -1098,7 +1187,7 @@ class SignaturePreview extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════
-//  OTHER HELPER WIDGETS
+//  HELPER WIDGETS
 // ══════════════════════════════════════════════════════════
 class _NoActiveDelivery extends StatelessWidget {
   const _NoActiveDelivery();
@@ -1107,24 +1196,21 @@ class _NoActiveDelivery extends StatelessWidget {
   Widget build(BuildContext context) => Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.local_shipping_outlined,
-                    size: 80, color: AppColors.textHint),
-                const SizedBox(height: 20),
-                const Text('No Active Delivery',
-                    style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textSecondary)),
-                const SizedBox(height: 10),
-                const Text(
-                    'Accept a job from the Jobs tab\nto start a delivery.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        fontSize: 14, color: AppColors.textHint)),
-              ]),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.local_shipping_outlined,
+                size: 80, color: AppColors.textHint),
+            const SizedBox(height: 20),
+            const Text('No Active Delivery',
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textSecondary)),
+            const SizedBox(height: 10),
+            const Text(
+                'Accept a job from the Jobs tab\nto start a delivery.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: AppColors.textHint)),
+          ]),
         ),
       );
 }
@@ -1186,6 +1272,7 @@ class _DeliveryStep extends StatelessWidget {
         : isActive
             ? buttonColor
             : AppColors.textHint;
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1194,72 +1281,66 @@ class _DeliveryStep extends StatelessWidget {
           border: Border.all(
               color: isActive ? buttonColor : AppColors.border,
               width: isActive ? 2 : 1)),
-      child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                    color: color.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(10)),
-                child: Icon(
-                    isCompleted ? Icons.check_circle : icon,
-                    color: color,
-                    size: 22),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: Text(title,
-                      style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: isActive
-                              ? buttonColor
-                              : AppColors.textPrimary))),
-              if (isCompleted)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                      color: AppColors.success.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(6)),
-                  child: const Text('Done',
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.success)),
-                ),
-            ]),
-            const SizedBox(height: 10),
-            Row(children: [
-              const Icon(Icons.location_on,
-                  size: 15, color: AppColors.textHint),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: Text(address,
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: isActive
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary))),
-            ]),
-            if (isActive && onButtonPressed != null) ...[
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: onButtonPressed,
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: buttonColor),
-                  child: Text(buttonText,
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600)),
-                ),
-              ),
-            ],
-          ]),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10)),
+            child: Icon(isCompleted ? Icons.check_circle : icon,
+                color: color, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+              child: Text(title,
+                  style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: isActive
+                          ? buttonColor
+                          : AppColors.textPrimary))),
+          if (isCompleted)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6)),
+              child: const Text('Done',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.success)),
+            ),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          const Icon(Icons.location_on, size: 15, color: AppColors.textHint),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(address,
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: isActive
+                          ? AppColors.textPrimary
+                          : AppColors.textSecondary))),
+        ]),
+        if (isActive && onButtonPressed != null) ...[
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: onButtonPressed,
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: buttonColor),
+              child: Text(buttonText,
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ],
+      ]),
     );
   }
 }
@@ -1277,8 +1358,7 @@ class _InfoRow extends StatelessWidget {
         Expanded(
             child: Text(label,
                 style: const TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textSecondary))),
+                    fontSize: 14, color: AppColors.textSecondary))),
         Text(value,
             style: const TextStyle(
                 fontSize: 14,
