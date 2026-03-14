@@ -164,14 +164,36 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     setState(() => _isPlacingOrder = false);
 
     if (result.success) {
-      // ✅ FIX: Clear the cart on the server immediately after a successful
-      // order. CartScreen.didChangeDependencies() will reload when the user
-      // navigates back to the Cart tab and find it empty.
-      // Fire-and-forget — the order is already confirmed even if this fails.
       AuthService.instance.clearCart().ignore();
 
-      // pushReplacement so back-button from OrderSuccessScreen goes to Home,
-      // not back to the checkout form.
+      // Multiple suppliers warning
+      final data = result.data as Map<String, dynamic>?;
+      final warningMessage = data?['warningMessage']?.toString();
+
+      if (warningMessage != null && warningMessage.isNotEmpty && mounted) {
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            title: const Row(children: [
+              Icon(Icons.info_outline, color: Colors.orange),
+              SizedBox(width: 8),
+              Expanded(child: Text('Multiple Orders Created')),
+            ]),
+            content: SingleChildScrollView(
+              child: Text(warningMessage),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK, Got It'),
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => OrderSuccessScreen(orderData: result.data)),
