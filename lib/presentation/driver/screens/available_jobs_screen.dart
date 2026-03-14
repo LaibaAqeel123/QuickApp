@@ -5,7 +5,6 @@ import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/active_delivery_screen.dart';
 
 class AvailableJobsScreen extends StatefulWidget {
-  /// driverId passed from DriverHomeScreen (or DriverMainScreen).
   final String? driverId;
   const AvailableJobsScreen({super.key, this.driverId});
 
@@ -14,17 +13,15 @@ class AvailableJobsScreen extends StatefulWidget {
 }
 
 class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
-  // ── State ──────────────────────────────────────────────
   List<Map<String, dynamic>> _jobs = [];
   bool    _isLoading   = true;
   String? _errorMsg;
   String? _driverId;
 
-  // ── Polling timer (every 30 seconds) ──────────────────
-  Timer? _pollTimer;
+  // Delivery IDs explicitly accepted this session — never re-show these.
+  final Set<String> _acceptedIds = {};
 
-  // ── Per-card countdown timers ──────────────────────────
-  // Maps deliveryId → remaining seconds (updated every second)
+  Timer? _pollTimer;
   final Map<String, int> _countdowns = {};
   Timer? _countdownTimer;
 
@@ -42,20 +39,20 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
   }
 
   Future<void> _init() async {
-    // Resolve driverId
     _driverId = widget.driverId ??
         await AuthService.instance.getSavedDriverId();
 
-    // Initial load
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  AVAILABLE JOBS SCREEN — INIT');
+    debugPrint('║  resolved driverId: $_driverId');
+    debugPrint('╚══════════════════════════════════════╝');
+
     await _loadJobs();
 
-    // Poll every 30 seconds for new offers
     _pollTimer = Timer.periodic(
       const Duration(seconds: 30),
       (_) => _loadJobs(silent: true),
     );
-
-    // Tick countdown every second
     _countdownTimer = Timer.periodic(
       const Duration(seconds: 1),
       (_) => _tickCountdowns(),
@@ -63,7 +60,7 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
   }
 
   // ══════════════════════════════════════════════════════
-  //  LOAD JOBS — GET /api/Deliveries?status=2
+  //  LOAD JOBS
   // ══════════════════════════════════════════════════════
   Future<void> _loadJobs({bool silent = false}) async {
     if (!mounted) return;
@@ -73,34 +70,83 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     if (!mounted) return;
 
     if (result.success && result.data != null) {
-      // Filter: only show cards assigned to THIS driver
       final all = result.data!
           .whereType<Map<String, dynamic>>()
           .toList();
 
-      final filtered = _driverId != null
-          ? all.where((d) {
-        final id = (d['driverId'] ?? d['driver_id'] ?? '').toString();
-        final status = (d['deliveryStatus'] ?? '').toString().toLowerCase();
-        return id == _driverId && status != 'failed' && status != 'delivered';
-      }).toList()
-          : all;
-      // Rebuild countdowns for new deliveries
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  FILTER DEBUG — total deliveries from API: ${all.length}');
+      debugPrint('║  current driverId: $_driverId');
+      for (final d in all) {
+        debugPrint('║  → id=${d['deliveryId']} status=${d['deliveryStatus']} driverId=${d['driverId']}');
+      }
+      debugPrint('╚══════════════════════════════════════╝');
+
+      List<Map<String, dynamic>> filtered;
+
+      if (_driverId == null || _driverId!.isEmpty) {
+        // driverId not resolved yet — show nothing rather than everything
+        debugPrint('[AvailableJobs] driverId is null — showing empty list');
+        filtered = [];
+      } else {
+        filtered = all.where((d) {
+          final driverIdOnDelivery =
+              (d['driverId'] ?? d['driver_id'] ?? '').toString().trim();
+          final delivId  = _jobId(d);
+
+          // ── Status check ──────────────────────────────────────────
+          // The API returns status as a STRING like "Assigned",
+          // "PendingAssignment", "PickedUp", "Delivered", "Failed".
+          // We only want "Assigned" (which corresponds to status int 2).
+          // We NEVER want: PendingAssignment, Accepted, PickedUp,
+          //                InTransit, Delivered, Failed, Expired.
+          final rawStatus = (d['deliveryStatus'] ??
+                  d['delivery_status'] ??
+                  d['status'] ??
+                  '')
+              .toString()
+              .trim();
+          final statusLower = rawStatus.toLowerCase();
+          final statusInt   = int.tryParse(statusLower) ?? -1;
+
+          // Accept "Assigned" or integer 2 — nothing else.
+          final bool isAssigned =
+              statusLower == 'assigned' || statusInt == 2;
+
+          // ── Driver ID check ───────────────────────────────────────
+          final bool isThisDriver = driverIdOnDelivery == _driverId;
+
+          // ── Session-acceptance guard ──────────────────────────────
+          final bool notYetAccepted = !_acceptedIds.contains(delivId);
+
+          debugPrint(
+            '[AvailableJobs] delivery $delivId: '
+            'status="$rawStatus" isAssigned=$isAssigned | '
+            'driverMatch=$isThisDriver | notAccepted=$notYetAccepted',
+          );
+
+          return isAssigned && isThisDriver && notYetAccepted;
+        }).toList();
+      }
+
+      debugPrint('[AvailableJobs] filtered count: ${filtered.length}');
+
+      // Rebuild countdowns
       final Map<String, int> newCountdowns = {};
       for (final job in filtered) {
-        final id = _jobId(job);
+        final id      = _jobId(job);
         final expires = _parseExpiry(job['expiresAt']?.toString());
         if (expires != null) {
           final remaining =
               expires.difference(DateTime.now().toUtc()).inSeconds;
           newCountdowns[id] = remaining > 0 ? remaining : 0;
         } else {
-          newCountdowns[id] = _countdowns[id] ?? 600;
+          newCountdowns[id] = _countdowns[id] ?? 3600;
         }
       }
 
       setState(() {
-        _jobs     = filtered;
+        _jobs      = filtered;
         _isLoading = false;
         _countdowns
           ..clear()
@@ -114,7 +160,6 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     }
   }
 
-  // ── Countdown ticker ───────────────────────────────────
   void _tickCountdowns() {
     if (!mounted) return;
     setState(() {
@@ -124,24 +169,38 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     });
   }
 
-  // ── Field helpers ──────────────────────────────────────
   String _jobId(Map<String, dynamic> j) =>
       (j['deliveryId'] ?? j['id'] ?? '').toString();
 
+  // ══════════════════════════════════════════════════════
+  //  _parseExpiry — treat bare datetime strings as UTC
+  // ══════════════════════════════════════════════════════
   DateTime? _parseExpiry(String? s) {
     if (s == null || s.isEmpty) return null;
-    try { return DateTime.parse(s).toUtc(); } catch (_) { return null; }
+    try {
+      String normalized = s.trim();
+      final bool hasTimezone = normalized.endsWith('Z') ||
+          normalized.endsWith('z') ||
+          normalized.contains('+') ||
+          (normalized.length > 10 && normalized.lastIndexOf('-') > 10);
+      if (!hasTimezone) normalized = '${normalized}Z';
+      final parsed = DateTime.parse(normalized).toUtc();
+      debugPrint(
+        '[_parseExpiry] raw="$s" → remaining='
+        '${parsed.difference(DateTime.now().toUtc()).inSeconds}s',
+      );
+      return parsed;
+    } catch (e) {
+      debugPrint('[_parseExpiry] failed to parse "$s": $e');
+      return null;
+    }
   }
 
-  bool _isExpired(Map<String, dynamic> job) {
-    final id  = _jobId(job);
-    final secs = _countdowns[id] ?? 0;
-    return secs <= 0;
-  }
+  bool _isExpired(Map<String, dynamic> job) =>
+      (_countdowns[_jobId(job)] ?? 0) <= 0;
 
   String _formatCountdown(Map<String, dynamic> job) {
-    final id   = _jobId(job);
-    final secs = _countdowns[id] ?? 0;
+    final secs = _countdowns[_jobId(job)] ?? 0;
     if (secs <= 0) return 'Expired';
     final m = secs ~/ 60;
     final s = secs % 60;
@@ -149,7 +208,7 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
   }
 
   // ══════════════════════════════════════════════════════
-  //  ACCEPT — POST /api/Drivers/{driverId}/deliveries/{deliveryId}/accept
+  //  ACCEPT
   // ══════════════════════════════════════════════════════
   Future<void> _acceptJob(Map<String, dynamic> job) async {
     if (_driverId == null) {
@@ -165,20 +224,23 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     _setJobLoading(delivId, true);
 
     final result = await AuthService.instance.acceptDelivery(
-      driverId: _driverId!,
+      driverId:   _driverId!,
       deliveryId: delivId,
     );
     if (!mounted) return;
     _setJobLoading(delivId, false);
 
     if (result.success) {
-      _snack('Delivery accepted! Head to the pickup point. 🚗');
-      // Remove from list and navigate to active delivery
+      _acceptedIds.add(delivId);
       setState(() => _jobs.removeWhere((j) => _jobId(j) == delivId));
+      _snack('Delivery accepted! Head to the pickup point. 🚗');
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => ActiveDeliveryScreen(delivery: job),
+          builder: (_) => ActiveDeliveryScreen(
+            delivery: job,
+            driverId: _driverId,
+          ),
         ),
       );
     } else {
@@ -187,13 +249,13 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
   }
 
   // ══════════════════════════════════════════════════════
-  //  REJECT — POST /api/Drivers/{driverId}/deliveries/{deliveryId}/reject
+  //  REJECT
   // ══════════════════════════════════════════════════════
   void _promptReject(Map<String, dynamic> job) {
-    String?        _selectedReason;
-    String         _otherText = '';
-    bool           _isRejecting = false;
-    final reasons   = ['Too far away', 'Vehicle issue', 'Too busy', 'Other'];
+    String?  _selectedReason;
+    String   _otherText   = '';
+    bool     _isRejecting = false;
+    final    reasons = ['Too far away', 'Vehicle issue', 'Too busy', 'Other'];
 
     showModalBottomSheet(
       context: context,
@@ -207,33 +269,25 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
             bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(2)),
-            ),
+            Container(width: 40, height: 4,
+                decoration: BoxDecoration(color: AppColors.border,
+                    borderRadius: BorderRadius.circular(2))),
             const SizedBox(height: 16),
             const Text('Reason for Rejection',
-                style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
                     color: AppColors.textPrimary)),
             const SizedBox(height: 16),
             ...reasons.map((r) => RadioListTile<String>(
-              value: r,
-              groupValue: _selectedReason,
-              title: Text(r),
-              activeColor: AppColors.primary,
+              value: r, groupValue: _selectedReason,
+              title: Text(r), activeColor: AppColors.primary,
               onChanged: (v) => setBS(() => _selectedReason = v),
             )),
             if (_selectedReason == 'Other') ...[
               const SizedBox(height: 8),
               TextField(
                 decoration: const InputDecoration(
-                  labelText: 'Please describe...',
-                  border: OutlineInputBorder(),
-                ),
+                    labelText: 'Please describe...',
+                    border: OutlineInputBorder()),
                 onChanged: (v) => _otherText = v,
                 maxLines: 2,
               ),
@@ -248,8 +302,7 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
                         setBS(() => _isRejecting = true);
                         final reason = _selectedReason == 'Other'
                             ? (_otherText.trim().isNotEmpty
-                                ? _otherText.trim()
-                                : 'Other')
+                                ? _otherText.trim() : 'Other')
                             : _selectedReason!;
                         Navigator.of(ctx).pop();
                         await _doReject(job, reason);
@@ -272,15 +325,10 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     if (_driverId == null) return;
     final delivId = _jobId(job);
     _setJobLoading(delivId, true);
-
     final result = await AuthService.instance.rejectDelivery(
-      driverId:   _driverId!,
-      deliveryId: delivId,
-      reason:     reason,
-    );
+      driverId: _driverId!, deliveryId: delivId, reason: reason);
     if (!mounted) return;
     _setJobLoading(delivId, false);
-
     if (result.success) {
       setState(() => _jobs.removeWhere((j) => _jobId(j) == delivId));
       _snack('Delivery rejected. It will be reassigned.');
@@ -289,7 +337,6 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
     }
   }
 
-  // ── Per-card loading state ─────────────────────────────
   final Set<String> _loadingCards = {};
   void _setJobLoading(String id, bool v) {
     if (!mounted) return;
@@ -337,21 +384,17 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
                         padding: const EdgeInsets.all(16),
                         itemCount: _jobs.length,
                         itemBuilder: (_, i) {
-                          final job   = _jobs[i];
-                          final id    = _jobId(job);
-                          final busy  = _loadingCards.contains(id);
+                          final job     = _jobs[i];
+                          final id      = _jobId(job);
+                          final busy    = _loadingCards.contains(id);
                           final expired = _isExpired(job);
                           return _JobCard(
-                            job:           job,
-                            countdown:     _formatCountdown(job),
-                            isExpired:     expired,
-                            isLoading:     busy,
-                            onAccept:      expired || busy
-                                ? null
-                                : () => _acceptJob(job),
-                            onReject:      busy
-                                ? null
-                                : () => _promptReject(job),
+                            job:       job,
+                            countdown: _formatCountdown(job),
+                            isExpired: expired,
+                            isLoading: busy,
+                            onAccept:  expired || busy ? null : () => _acceptJob(job),
+                            onReject:  busy ? null : () => _promptReject(job),
                           );
                         },
                       ),
@@ -365,19 +408,14 @@ class _AvailableJobsScreenState extends State<AvailableJobsScreen> {
 // ══════════════════════════════════════════════════════════
 class _JobCard extends StatelessWidget {
   final Map<String, dynamic> job;
-  final String   countdown;
-  final bool     isExpired;
-  final bool     isLoading;
-  final VoidCallback? onAccept;
-  final VoidCallback? onReject;
+  final String countdown;
+  final bool   isExpired, isLoading;
+  final VoidCallback? onAccept, onReject;
 
   const _JobCard({
-    required this.job,
-    required this.countdown,
-    required this.isExpired,
-    required this.isLoading,
-    required this.onAccept,
-    required this.onReject,
+    required this.job, required this.countdown,
+    required this.isExpired, required this.isLoading,
+    required this.onAccept, required this.onReject,
   });
 
   String _str(String key, [String fallback = 'N/A']) =>
@@ -388,13 +426,12 @@ class _JobCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final orderNum     = _str('orderNumber', 'Order');
-    final pickup       = _str('pickupAddress');
-    final delivery     = _str('deliveryAddress');
-    final distRaw      = job['distanceKm'] ?? job['distance_km'] ?? job['distance'];
-    final distance     = distRaw != null
-        ? '${(distRaw as num).toStringAsFixed(1)} km'
-        : 'N/A';
+    final orderNum = _str('orderNumber', 'Order');
+    final pickup   = _str('pickupAddress');
+    final delivery = _str('deliveryAddress');
+    final distRaw  = job['distanceKm'] ?? job['distance_km'] ?? job['distance'];
+    final distance = distRaw != null
+        ? '${(distRaw as num).toStringAsFixed(1)} km' : 'N/A';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -402,35 +439,30 @@ class _JobCard extends StatelessWidget {
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isExpired ? AppColors.error.withOpacity(0.4) : AppColors.border,
-        ),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.05),
-              blurRadius: 8, offset: const Offset(0, 2))
-        ],
+            color: isExpired
+                ? AppColors.error.withOpacity(0.4)
+                : AppColors.border),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05),
+            blurRadius: 8, offset: const Offset(0, 2))],
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // ── Card header: order number + countdown ──
+        // Header
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: isExpired
                 ? AppColors.error.withOpacity(0.08)
                 : AppColors.primary.withOpacity(0.06),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(16)),
           ),
           child: Row(children: [
-            Expanded(
-              child: Text(orderNum,
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary)),
-            ),
-            // Countdown chip
+            Expanded(child: Text(orderNum,
+                style: const TextStyle(fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary))),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
                 color: isExpired
                     ? AppColors.error
@@ -438,117 +470,85 @@ class _JobCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(
-                  isExpired ? Icons.timer_off : Icons.timer_outlined,
-                  size: 14,
-                  color: isExpired ? Colors.white : AppColors.warning,
-                ),
+                Icon(isExpired ? Icons.timer_off : Icons.timer_outlined,
+                    size: 14,
+                    color: isExpired ? Colors.white : AppColors.warning),
                 const SizedBox(width: 4),
-                Text(
-                  countdown,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: isExpired ? Colors.white : AppColors.warning,
-                  ),
-                ),
+                Text(countdown,
+                    style: TextStyle(fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: isExpired ? Colors.white : AppColors.warning)),
               ]),
             ),
           ]),
         ),
 
-        // ── Addresses ─────────────────────────────
+        // Addresses
         Padding(
           padding: const EdgeInsets.all(16),
           child: Column(children: [
-            _AddressRow(
-              icon: Icons.store,
-              color: AppColors.primary,
-              label: 'Pickup',
-              address: pickup,
-            ),
+            _AddressRow(icon: Icons.store, color: AppColors.primary,
+                label: 'Pickup', address: pickup),
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 6),
               child: Row(children: [
                 SizedBox(width: 20),
-                Padding(
-                  padding: EdgeInsets.only(left: 2),
-                  child: Icon(Icons.arrow_downward,
-                      size: 14, color: AppColors.textHint),
-                ),
+                Padding(padding: EdgeInsets.only(left: 2),
+                    child: Icon(Icons.arrow_downward,
+                        size: 14, color: AppColors.textHint)),
               ]),
             ),
-            _AddressRow(
-              icon: Icons.location_on,
-              color: AppColors.success,
-              label: 'Delivery',
-              address: delivery,
-            ),
+            _AddressRow(icon: Icons.location_on, color: AppColors.success,
+                label: 'Delivery', address: delivery),
             const SizedBox(height: 12),
             const Divider(height: 1),
             const SizedBox(height: 12),
             Row(children: [
               const Icon(Icons.route, size: 16, color: AppColors.textHint),
               const SizedBox(width: 6),
-              Text(distance,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary)),
+              Text(distance, style: const TextStyle(fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary)),
             ]),
           ]),
         ),
 
-        // ── Accept / Reject buttons ────────────────
+        // Buttons
         if (isLoading)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Center(child: CircularProgressIndicator()),
-          )
+          const Padding(padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Center(child: CircularProgressIndicator()))
         else
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Row(children: [
-              // Reject
-              Expanded(
-                child: SizedBox(
-                  height: 48,
-                  child: OutlinedButton(
-                    onPressed: onReject,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.error,
-                      side: const BorderSide(color: AppColors.error),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text('Reject',
-                        style: TextStyle(fontWeight: FontWeight.w600)),
+              Expanded(child: SizedBox(height: 48,
+                child: OutlinedButton(
+                  onPressed: onReject,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                    side: const BorderSide(color: AppColors.error),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
+                  child: const Text('Reject',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
                 ),
-              ),
+              )),
               const SizedBox(width: 12),
-              // Accept
-              Expanded(
-                flex: 2,
-                child: SizedBox(
-                  height: 48,
-                  child: ElevatedButton(
-                    onPressed: onAccept,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isExpired
-                          ? AppColors.border
-                          : AppColors.success,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: Text(
-                      isExpired ? 'Offer Expired' : 'Accept',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
+              Expanded(flex: 2, child: SizedBox(height: 48,
+                child: ElevatedButton(
+                  onPressed: onAccept,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isExpired
+                        ? AppColors.border : AppColors.success,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
+                  child: Text(isExpired ? 'Offer Expired' : 'Accept',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
                 ),
-              ),
+              )),
             ]),
           ),
       ]),
@@ -569,23 +569,19 @@ class _AddressRow extends StatelessWidget {
     children: [
       Container(
         padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(6),
-        ),
+        decoration: BoxDecoration(color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(6)),
         child: Icon(icon, size: 16, color: color),
       ),
       const SizedBox(width: 10),
-      Expanded(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: const TextStyle(
-              fontSize: 11, color: AppColors.textHint)),
-          const SizedBox(height: 2),
-          Text(address, style: const TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary)),
-        ]),
-      ),
+      Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: const TextStyle(
+            fontSize: 11, color: AppColors.textHint)),
+        const SizedBox(height: 2),
+        Text(address, style: const TextStyle(fontSize: 13,
+            fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      ])),
     ],
   );
 }
@@ -602,18 +598,14 @@ class _EmptyView extends StatelessWidget {
     child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       const Icon(Icons.work_off, size: 80, color: AppColors.textHint),
       const SizedBox(height: 16),
-      const Text('No jobs available',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600,
-              color: AppColors.textSecondary)),
+      const Text('No jobs available', style: TextStyle(fontSize: 18,
+          fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
       const SizedBox(height: 8),
       const Text('Pull down to refresh or wait for new offers',
           style: TextStyle(fontSize: 14, color: AppColors.textHint)),
       const SizedBox(height: 24),
-      ElevatedButton.icon(
-        onPressed: onRefresh,
-        icon: const Icon(Icons.refresh),
-        label: const Text('Refresh Now'),
-      ),
+      ElevatedButton.icon(onPressed: onRefresh,
+          icon: const Icon(Icons.refresh), label: const Text('Refresh Now')),
     ]),
   );
 }
@@ -625,20 +617,16 @@ class _ErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
+    child: Padding(padding: const EdgeInsets.all(24),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         const Icon(Icons.error_outline, size: 60, color: AppColors.error),
         const SizedBox(height: 16),
         Text(message, textAlign: TextAlign.center,
-            style: const TextStyle(
-                fontSize: 15, color: AppColors.textSecondary)),
+            style: const TextStyle(fontSize: 15,
+                color: AppColors.textSecondary)),
         const SizedBox(height: 24),
-        ElevatedButton.icon(
-          onPressed: onRetry,
-          icon: const Icon(Icons.refresh),
-          label: const Text('Retry'),
-        ),
+        ElevatedButton.icon(onPressed: onRetry,
+            icon: const Icon(Icons.refresh), label: const Text('Retry')),
       ]),
     ),
   );

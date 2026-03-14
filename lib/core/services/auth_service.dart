@@ -103,9 +103,9 @@ class AuthService {
   static final AuthService instance = AuthService._();
 
   Map<String, String> get _jsonHeaders => {
-    'Content-Type': 'application/json',
-    'Accept':       'application/json',
-  };
+        'Content-Type': 'application/json',
+        'Accept':       'application/json',
+      };
 
   Future<Map<String, String>> get _authHeaders async {
     final token = await getAccessToken();
@@ -266,7 +266,7 @@ class AuthService {
       _log('REGISTER REQUEST', ApiConstants.register);
       final response = await http
           .post(Uri.parse(ApiConstants.register),
-          headers: _jsonHeaders, body: jsonEncode(body))
+              headers: _jsonHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 60));
       _log('REGISTER RESPONSE', ApiConstants.register,
           status: response.statusCode, body: response.body);
@@ -312,7 +312,7 @@ class AuthService {
       request.files.add(
           http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
       final streamed =
-      await request.send().timeout(const Duration(seconds: 60));
+          await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
@@ -338,8 +338,8 @@ class AuthService {
       _log('LOGIN REQUEST', ApiConstants.login, extra: 'email: $email');
       final response = await http
           .post(Uri.parse(ApiConstants.login),
-          headers: _jsonHeaders,
-          body: jsonEncode({'email': email, 'password': password}))
+              headers: _jsonHeaders,
+              body: jsonEncode({'email': email, 'password': password}))
           .timeout(const Duration(seconds: 30));
       _log('LOGIN RESPONSE', ApiConstants.login,
           status: response.statusCode, body: response.body);
@@ -353,7 +353,7 @@ class AuthService {
             accessToken:  token,
             refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
             role: _extract(
-                resBody, ['role', 'userType', 'user.role', 'data.role'])
+                    resBody, ['role', 'userType', 'user.role', 'data.role'])
                 ?.toLowerCase(),
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
@@ -445,7 +445,7 @@ class AuthService {
     try {
       final response = await http
           .post(Uri.parse(ApiConstants.resendVerification),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
@@ -465,8 +465,8 @@ class AuthService {
       final rt = await getRefreshToken();
       await http
           .post(Uri.parse(ApiConstants.logout),
-          headers: await _authHeaders,
-          body: jsonEncode({'refreshToken': rt ?? ''}))
+              headers: await _authHeaders,
+              body: jsonEncode({'refreshToken': rt ?? ''}))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
     } finally {
@@ -481,7 +481,7 @@ class AuthService {
     try {
       final response = await http
           .get(Uri.parse(ApiConstants.driverById(driverId)),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('GET DRIVER PROFILE RESPONSE', ApiConstants.driverById(driverId),
           status: response.statusCode, body: response.body);
@@ -553,7 +553,7 @@ class AuthService {
       };
       final response = await http
           .post(Uri.parse(ApiConstants.driverLocation(driverId)),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const AuthResult(success: true);
@@ -648,7 +648,7 @@ class AuthService {
           extra: 'productId: $productId | qty: $quantity');
       final response = await http
           .post(Uri.parse(ApiConstants.cartItems),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('ADD CART ITEM RESPONSE', ApiConstants.cartItems,
           status: response.statusCode, body: response.body);
@@ -678,7 +678,7 @@ class AuthService {
       };
       final response = await http
           .put(Uri.parse(url),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 204) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
@@ -732,7 +732,7 @@ class AuthService {
           extra: 'deliveryAddressId: $deliveryAddressId');
       final response = await http
           .post(Uri.parse(ApiConstants.ordersCheckout),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CHECKOUT RESPONSE', ApiConstants.ordersCheckout,
           status: response.statusCode, body: response.body);
@@ -764,7 +764,7 @@ class AuthService {
         if (dateTo   != null) 'dateTo':   dateTo,
       };
       final uri =
-      Uri.parse(ApiConstants.myOrders).replace(queryParameters: params);
+          Uri.parse(ApiConstants.myOrders).replace(queryParameters: params);
       _log('GET MY ORDERS REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -816,8 +816,8 @@ class AuthService {
       _log('CANCEL ORDER REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-          headers: await _authHeaders,
-          body: jsonEncode({'reason': reason}))
+              headers: await _authHeaders,
+              body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('CANCEL ORDER RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -839,7 +839,7 @@ class AuthService {
       _log('GET MY ORDERS ANALYTICS REQUEST', ApiConstants.myOrdersAnalytics);
       final response = await http
           .get(Uri.parse(ApiConstants.myOrdersAnalytics),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('GET MY ORDERS ANALYTICS RESPONSE',
           ApiConstants.myOrdersAnalytics,
@@ -925,13 +925,13 @@ class AuthService {
   }) async {
     try {
       final url =
-      ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
+          ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
       _log('UPDATE ORDER ITEM STATUS REQUEST', url,
           extra: 'status: $status');
       final response = await http
           .patch(Uri.parse(url),
-          headers: await _authHeaders,
-          body: jsonEncode({'status': status}))
+              headers: await _authHeaders,
+              body: jsonEncode({'status': status}))
           .timeout(const Duration(seconds: 30));
       _log('UPDATE ORDER ITEM STATUS RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -1092,7 +1092,7 @@ class AuthService {
       _log('CREATE ADDRESS REQUEST', ApiConstants.addresses);
       final response = await http
           .post(Uri.parse(ApiConstants.addresses),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CREATE ADDRESS RESPONSE', ApiConstants.addresses,
           status: response.statusCode, body: response.body);
@@ -1135,7 +1135,7 @@ class AuthService {
       _log('UPDATE ADDRESS REQUEST', url);
       final response = await http
           .put(Uri.parse(url),
-          headers: await _authHeaders, body: jsonEncode(body))
+              headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('UPDATE ADDRESS RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -1278,7 +1278,7 @@ class AuthService {
       _log('GET CATALOG FILTERS REQUEST', ApiConstants.catalogFilters);
       final response = await http
           .get(Uri.parse(ApiConstants.catalogFilters),
-          headers: await _authHeaders)
+              headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('GET CATALOG FILTERS RESPONSE', ApiConstants.catalogFilters,
           status: response.statusCode, body: response.body);
@@ -1401,8 +1401,8 @@ class AuthService {
       _log('REJECT DELIVERY REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-          headers: await _authHeaders,
-          body: jsonEncode({'reason': reason}))
+              headers: await _authHeaders,
+              body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('REJECT DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -1446,7 +1446,7 @@ class AuthService {
         ));
       }
       final streamed =
-      await request.send().timeout(const Duration(seconds: 60));
+          await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('CONFIRM PICKUP RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -1500,7 +1500,7 @@ class AuthService {
         ));
       }
       final streamed =
-      await request.send().timeout(const Duration(seconds: 60));
+          await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('COMPLETE DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
@@ -1555,7 +1555,7 @@ class AuthService {
     try {
       final uri = Uri.parse(ApiConstants.earningsByDateRange(driverId))
           .replace(
-          queryParameters: {'fromDate': fromDate, 'toDate': toDate});
+              queryParameters: {'fromDate': fromDate, 'toDate': toDate});
       _log('GET EARNINGS BY DATE RANGE REQUEST', uri.toString(),
           extra: 'driverId: $driverId | from: $fromDate | to: $toDate');
       final response = await http
