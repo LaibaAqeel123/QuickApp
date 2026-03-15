@@ -1,9 +1,249 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
+import 'package:food_delivery_app/core/services/auth_service.dart';
+import 'package:image_picker/image_picker.dart';
 
-class DocumentsScreen extends StatelessWidget {
+// ─────────────────────────────────────────────────────────
+//  Document type definitions
+// ─────────────────────────────────────────────────────────
+class _DocType {
+  final String   apiKey;
+  final String   label;
+  final String   hint;
+  final IconData icon;
+  const _DocType({
+    required this.apiKey,
+    required this.label,
+    required this.hint,
+    required this.icon,
+  });
+}
+
+const _docTypes = [
+  _DocType(
+    apiKey: 'DrivingLicense',
+    label:  'Driving Licence',
+    hint:   'Front & back of your driving licence',
+    icon:   Icons.credit_card,
+  ),
+  _DocType(
+    apiKey: 'Insurance',
+    label:  'Vehicle Insurance',
+    hint:   'Current insurance certificate',
+    icon:   Icons.shield_outlined,
+  ),
+  _DocType(
+    apiKey: 'VehicleRegistration',
+    label:  'Vehicle Registration',
+    hint:   'V5C logbook or registration document',
+    icon:   Icons.directions_car_outlined,
+  ),
+  _DocType(
+    apiKey: 'MOT',
+    label:  'MOT Certificate',
+    hint:   'Current MOT test certificate',
+    icon:   Icons.verified_outlined,
+  ),
+];
+
+// ─────────────────────────────────────────────────────────
+//  Documents Screen
+// ─────────────────────────────────────────────────────────
+class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key});
 
+  @override
+  State<DocumentsScreen> createState() => _DocumentsScreenState();
+}
+
+class _DocumentsScreenState extends State<DocumentsScreen> {
+  String? _driverId;
+  bool    _loadingDriverId = true;
+
+  final Set<String> _uploading = {};
+  final Set<String> _uploaded  = {};
+
+  final ImagePicker _picker = ImagePicker();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDriverId();
+  }
+
+  Future<void> _loadDriverId() async {
+    final id = await AuthService.instance.getSavedDriverId();
+    if (mounted) setState(() { _driverId = id; _loadingDriverId = false; });
+  }
+
+  // ── Pick image bytes — reads immediately, never holds the path ────────
+  Future<Uint8List?> _pickImageBytes(ImageSource source) async {
+    try {
+      final xfile = await _picker.pickImage(
+        source:       source,
+        maxWidth:     2048,
+        maxHeight:    2048,
+        imageQuality: 90,
+      );
+      if (xfile == null) return null;
+      return await xfile.readAsBytes();
+    } catch (e) {
+      debugPrint('[_pickImageBytes] error: $e');
+      if (mounted) _snack('Could not pick image: $e', isError: true);
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  Source chooser — FIXED
+  //
+  //  OLD BUG: used a local `result` variable that was assigned inside the
+  //  sheet's onTap callbacks. The sheet closed first (Navigator.pop), then
+  //  _pickImageBytes ran, but by then showModalBottomSheet had already
+  //  returned — so the assignment to `result` was never seen by the caller.
+  //
+  //  FIX: pick the image BEFORE closing the sheet. Pass the bytes to
+  //  Navigator.pop(ctx, bytes) as the sheet's return value. The outer
+  //  await showModalBottomSheet<Uint8List?>(...) then receives those bytes
+  //  directly. No race condition, no lost result.
+  // ─────────────────────────────────────────────────────────────────────
+  Future<Uint8List?> _chooseSource() async {
+    return showModalBottomSheet<Uint8List?>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 40, height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text('Choose Source',
+                  style: TextStyle(fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+            ),
+
+            // Camera option
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.camera_alt, color: AppColors.primary),
+              ),
+              title: const Text('Take Photo',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Use your camera'),
+              onTap: () async {
+                // Pick FIRST, then pop with the bytes as the return value.
+                // This is the correct pattern — do not pop before picking.
+                final bytes = await _pickImageBytes(ImageSource.camera);
+                if (ctx.mounted) Navigator.pop(ctx, bytes);
+              },
+            ),
+
+            const Divider(indent: 16, endIndent: 16),
+
+            // Gallery option
+            ListTile(
+              leading: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.photo_library, color: AppColors.success),
+              ),
+              title: const Text('Choose from Gallery',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Pick an existing photo'),
+              onTap: () async {
+                // Same pattern: pick first, then pop with bytes.
+                final bytes = await _pickImageBytes(ImageSource.gallery);
+                if (ctx.mounted) Navigator.pop(ctx, bytes);
+              },
+            ),
+
+            const SizedBox(height: 8),
+
+            // Cancel
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            const SizedBox(height: 4),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  // ── Upload handler ────────────────────────────────────────────────────
+  Future<void> _upload(_DocType doc) async {
+    if (_driverId == null || _driverId!.isEmpty) {
+      _snack('Driver ID not found. Please log out and log back in.',
+          isError: true);
+      return;
+    }
+
+    // Show source chooser — bytes come back as the sheet's return value.
+    final Uint8List? bytes = await _chooseSource();
+    if (bytes == null || bytes.isEmpty) return; // user cancelled or pick failed
+
+    setState(() => _uploading.add(doc.apiKey));
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  UPLOAD DOCUMENT — REQUEST');
+    debugPrint('║  driverId    : $_driverId');
+    debugPrint('║  documentType: ${doc.apiKey}');
+    debugPrint('║  bytes       : ${bytes.length}');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    final result = await AuthService.instance.uploadDriverDocument(
+      driverId:     _driverId!,
+      documentType: doc.apiKey,
+      fileBytes:    bytes,
+      fileName:     '${doc.apiKey.toLowerCase()}.jpg',
+    );
+
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  UPLOAD DOCUMENT — RESPONSE');
+    debugPrint('║  success: ${result.success}');
+    debugPrint('║  message: ${result.message}');
+    debugPrint('╚══════════════════════════════════════╝');
+
+    if (!mounted) return;
+    setState(() => _uploading.remove(doc.apiKey));
+
+    if (result.success) {
+      setState(() => _uploaded.add(doc.apiKey));
+      _snack('${doc.label} uploaded successfully ✅');
+    } else {
+      _snack(result.message ?? 'Upload failed. Please try again.',
+          isError: true);
+    }
+  }
+
+  void _snack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? AppColors.error : AppColors.success,
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -14,353 +254,221 @@ class DocumentsScreen extends StatelessWidget {
         foregroundColor: AppColors.white,
         elevation: 0,
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Alert for expiring documents
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.warning.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.warning.withOpacity(0.3)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning, color: AppColors.warning),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Your driver\'s license expires in 30 days. Please update it soon.',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textPrimary,
+      body: _loadingDriverId
+          ? const Center(child: CircularProgressIndicator())
+          : _driverId == null
+              ? _NoDriverId(onRetry: _loadDriverId)
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+
+                      // Info banner
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withOpacity(0.07),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: AppColors.primary.withOpacity(0.2)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.info_outline,
+                                color: AppColors.primary, size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Please upload clear, readable photos of your '
+                                'documents. Accepted formats: JPG, PNG (max 5 MB each).',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.primary.withOpacity(0.9)),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
+                      const SizedBox(height: 20),
 
-              const Text(
-                'Required Documents',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Driver's License
-              _DocumentCard(
-                icon: Icons.card_membership,
-                title: 'Driver\'s License',
-                status: 'Verified',
-                expiryDate: 'Expires: Mar 15, 2025',
-                statusColor: AppColors.warning,
-                onUpload: () {
-                  _showUploadDialog(context, 'Driver\'s License');
-                },
-                onView: () {},
-              ),
-
-              // Vehicle Insurance
-              _DocumentCard(
-                icon: Icons.verified_user,
-                title: 'Vehicle Insurance',
-                status: 'Verified',
-                expiryDate: 'Expires: Dec 20, 2026',
-                statusColor: AppColors.success,
-                onUpload: () {
-                  _showUploadDialog(context, 'Vehicle Insurance');
-                },
-                onView: () {},
-              ),
-
-              // Vehicle Registration
-              _DocumentCard(
-                icon: Icons.description,
-                title: 'Vehicle Registration',
-                status: 'Verified',
-                expiryDate: 'Valid',
-                statusColor: AppColors.success,
-                onUpload: () {
-                  _showUploadDialog(context, 'Vehicle Registration');
-                },
-                onView: () {},
-              ),
-
-              // MOT Certificate
-              _DocumentCard(
-                icon: Icons.check_circle,
-                title: 'MOT Certificate',
-                status: 'Verified',
-                expiryDate: 'Expires: Aug 10, 2025',
-                statusColor: AppColors.success,
-                onUpload: () {
-                  _showUploadDialog(context, 'MOT Certificate');
-                },
-                onView: () {},
-              ),
-
-              // Right to Work
-              _DocumentCard(
-                icon: Icons.work,
-                title: 'Right to Work',
-                status: 'Verified',
-                expiryDate: 'Valid',
-                statusColor: AppColors.success,
-                onUpload: () {
-                  _showUploadDialog(context, 'Right to Work Document');
-                },
-                onView: () {},
-              ),
-
-              // Profile Photo
-              _DocumentCard(
-                icon: Icons.person,
-                title: 'Profile Photo',
-                status: 'Uploaded',
-                expiryDate: '',
-                statusColor: AppColors.success,
-                onUpload: () {
-                  _showUploadDialog(context, 'Profile Photo');
-                },
-                onView: () {},
-              ),
-
-              const SizedBox(height: 24),
-
-              // Info Box
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.info.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.info.withOpacity(0.3)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.info_outline, color: AppColors.info, size: 20),
-                        const SizedBox(width: 8),
-                        const Text(
-                          'Document Requirements',
+                      const Text('Required Documents',
                           style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.info,
-                          ),
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary)),
+                      const SizedBox(height: 12),
+
+                      // Document cards
+                      ..._docTypes.map((doc) => _DocumentCard(
+                            doc:         doc,
+                            isUploading: _uploading.contains(doc.apiKey),
+                            isUploaded:  _uploaded.contains(doc.apiKey),
+                            onUpload:    () => _upload(doc),
+                          )),
+
+                      const SizedBox(height: 8),
+                      Center(
+                        child: Text(
+                          'Documents are reviewed within 1–2 business days.',
+                          style: TextStyle(
+                              fontSize: 12, color: AppColors.textHint),
+                          textAlign: TextAlign.center,
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      '• All documents must be clear and readable\n'
-                          '• Upload current, valid documents only\n'
-                          '• Documents are verified within 24-48 hours\n'
-                          '• You\'ll receive notifications before expiry',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: AppColors.textSecondary,
-                        height: 1.5,
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
+}
 
-  void _showUploadDialog(BuildContext context, String documentName) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Upload $documentName'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Opening camera for $documentName...'),
-                      backgroundColor: AppColors.info,
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Take Photo'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Opening gallery for $documentName...'),
-                      backgroundColor: AppColors.info,
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.photo_library),
-                label: const Text('Choose from Gallery'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-          ],
+// ─────────────────────────────────────────────────────────
+//  Document Card widget
+// ─────────────────────────────────────────────────────────
+class _DocumentCard extends StatelessWidget {
+  final _DocType     doc;
+  final bool         isUploading;
+  final bool         isUploaded;
+  final VoidCallback onUpload;
+
+  const _DocumentCard({
+    required this.doc,
+    required this.isUploading,
+    required this.isUploaded,
+    required this.onUpload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accent = isUploaded ? AppColors.success : AppColors.primary;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isUploaded
+              ? AppColors.success.withOpacity(0.5)
+              : AppColors.border,
+          width: isUploaded ? 1.5 : 1,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2))
         ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(children: [
+
+          // Icon
+          Container(
+            width: 52, height: 52,
+            decoration: BoxDecoration(
+              color: accent.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isUploaded ? Icons.check_circle : doc.icon,
+              color: accent,
+              size: 26,
+            ),
+          ),
+          const SizedBox(width: 14),
+
+          // Text
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(doc.label,
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 3),
+              Text(doc.hint,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary)),
+              if (isUploaded) ...[
+                const SizedBox(height: 4),
+                Row(children: [
+                  const Icon(Icons.check_circle,
+                      size: 13, color: AppColors.success),
+                  const SizedBox(width: 4),
+                  const Text('Uploaded successfully',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: AppColors.success,
+                          fontWeight: FontWeight.w600)),
+                ]),
+              ],
+            ]),
+          ),
+          const SizedBox(width: 12),
+
+          // Button / spinner
+          isUploading
+              ? const SizedBox(
+                  width: 36, height: 36,
+                  child: CircularProgressIndicator(strokeWidth: 2.5))
+              : SizedBox(
+                  height: 40,
+                  child: ElevatedButton(
+                    onPressed: onUpload,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor:
+                          isUploaded ? AppColors.success : AppColors.primary,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                    ),
+                    child: Text(
+                      isUploaded ? 'Replace' : 'Upload',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+        ]),
       ),
     );
   }
 }
 
-class _DocumentCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String status;
-  final String expiryDate;
-  final Color statusColor;
-  final VoidCallback onUpload;
-  final VoidCallback onView;
-
-  const _DocumentCard({
-    required this.icon,
-    required this.title,
-    required this.status,
-    required this.expiryDate,
-    required this.statusColor,
-    required this.onUpload,
-    required this.onView,
-  });
+// ─────────────────────────────────────────────────────────
+//  No Driver ID fallback
+// ─────────────────────────────────────────────────────────
+class _NoDriverId extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _NoDriverId({required this.onRetry});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, color: statusColor, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: statusColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          status,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: statusColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (expiryDate.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        expiryDate,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textHint,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              PopupMenuButton(
-                icon: const Icon(Icons.more_vert),
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    child: Row(
-                      children: [
-                        const Icon(Icons.upload, size: 20),
-                        const SizedBox(width: 12),
-                        const Text('Upload New'),
-                      ],
-                    ),
-                    onTap: onUpload,
-                  ),
-                  PopupMenuItem(
-                    child: Row(
-                      children: [
-                        const Icon(Icons.visibility, size: 20),
-                        const SizedBox(width: 12),
-                        const Text('View Document'),
-                      ],
-                    ),
-                    onTap: onView,
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.error_outline, size: 60, color: AppColors.error),
+            const SizedBox(height: 16),
+            const Text('Driver profile not found.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
+            const SizedBox(height: 8),
+            const Text(
+                'Please log out and log back in to refresh your profile.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: AppColors.textHint)),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon:  const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ]),
+        ),
+      );
 }
