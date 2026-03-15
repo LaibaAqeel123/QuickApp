@@ -1575,4 +1575,19 @@ class AuthService {
           success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
+  Future<ApiResult<Map<String, dynamic>>> getDeliveryByOrderId(
+      String orderId) async {
+    try {
+      final url = '${ApiConstants.baseUrl}/api/Deliveries/order/$orderId';
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false, message: 'Delivery not found');
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
 }
