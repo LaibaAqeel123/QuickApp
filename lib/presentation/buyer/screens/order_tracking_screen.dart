@@ -4,6 +4,9 @@ import 'package:latlong2/latlong.dart';
 import 'package:signalr_netcore/signalr_client.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
+import 'package:signalr_netcore/signalr_client.dart';
+import 'package:signalr_netcore/http_connection_options.dart';
+import 'package:signalr_netcore/itransport.dart';
 
 class OrderTrackingScreen extends StatefulWidget {
   final Map<String, dynamic> order;
@@ -14,18 +17,15 @@ class OrderTrackingScreen extends StatefulWidget {
 }
 
 class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
-  // ── Order Detail ───────────────────────────────────────
   Map<String, dynamic>? _detail;
   bool _isLoading = true;
   String? _error;
 
-  // ── Map ────────────────────────────────────────────────
   final MapController _mapController = MapController();
   LatLng? _driverLocation;
   LatLng? _deliveryLocation;
   double? _etaMinutes;
 
-  // ── SignalR ────────────────────────────────────────────
   HubConnection? _hubConnection;
   bool _isConnected = false;
 
@@ -41,7 +41,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     super.dispose();
   }
 
-  // ── Helpers ────────────────────────────────────────────
   Map<String, dynamic> get _src => _detail ?? widget.order;
 
   String get _orderId =>
@@ -55,9 +54,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     try {
       final dt = DateTime.parse(raw.toString()).toLocal();
       return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-    } catch (_) {
-      return raw.toString();
-    }
+    } catch (_) { return raw.toString(); }
   }
 
   String _fmtTime(dynamic raw) {
@@ -67,9 +64,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       final h = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
       final m = dt.minute.toString().padLeft(2, '0');
       return '$h:$m ${dt.hour >= 12 ? 'PM' : 'AM'}';
-    } catch (_) {
-      return raw.toString();
-    }
+    } catch (_) { return raw.toString(); }
   }
 
   String get _statusLabel {
@@ -117,7 +112,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     }
   }
 
-  // ── Load Order ─────────────────────────────────────────
   Future<void> _load() async {
     if (_orderId.isEmpty) {
       setState(() { _isLoading = false; _error = 'Invalid order ID.'; });
@@ -131,7 +125,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     if (r.success && r.data != null) {
       setState(() { _detail = r.data; _isLoading = false; });
 
-      //  Set delivery location from address
+      // Set delivery location from address
       final addr = _detail?['deliveryAddress'];
       if (addr != null) {
         final lat = (addr['latitude'] as num?)?.toDouble();
@@ -141,70 +135,88 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         }
       }
 
-      // Connect SignalR if deliveryId exists
-      if (_deliveryId.isNotEmpty) {
-        await _connectSignalR();
+      // Get deliveryId from separate API
+      final deliveryResult = await AuthService.instance
+          .getDeliveryByOrderId(_orderId);
+      debugPrint('📦 DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
+
+      if (deliveryResult.success && deliveryResult.data != null) {
+        final dId = deliveryResult.data!['deliveryId']?.toString() ?? '';
+        debugPrint('🚚 DeliveryId found: $dId');
+        if (dId.isNotEmpty) {
+          setState(() => _detail = {...?_detail, 'deliveryId': dId});
+          await _connectSignalR();
+        }
       }
     } else {
       setState(() { _isLoading = false; _error = r.message; });
     }
   }
-
-  // ── SignalR Connect ────────────────────────────────────
   Future<void> _connectSignalR() async {
+    debugPrint('🔌 SignalR connecting... deliveryId: $_deliveryId');
     try {
       final token = await AuthService.instance.getAccessToken();
+      debugPrint('🔑 Token: ${token != null ? "EXISTS" : "NULL"}');
       if (token == null) return;
 
       final hubUrl =
           'https://api.neptasolutions.co.uk/hubs/delivery-tracking?access_token=$token';
 
       _hubConnection = HubConnectionBuilder()
-          .withUrl(hubUrl)
+          .withUrl(
+        hubUrl,
+        options: HttpConnectionOptions(
+          transport: HttpTransportType.LongPolling,
+          skipNegotiation: true,
+        ),
+      )
           .withAutomaticReconnect()
           .build();
 
-      //  Listen for location updates
+      _hubConnection!.serverTimeoutInMilliseconds = 60000;
+      _hubConnection!.keepAliveIntervalInMilliseconds = 15000;
+
       _hubConnection!.on('LocationUpdated', (args) {
+        debugPrint('📍 LocationUpdated received: $args');
         if (args == null || args.isEmpty) return;
-        final data = args[0] as Map<String, dynamic>;
-
-        final lat = (data['latitude'] as num?)?.toDouble();
-        final lng = (data['longitude'] as num?)?.toDouble();
-        final eta = (data['etaMinutes'] as num?)?.toDouble();
-
-        if (lat != null && lng != null && mounted) {
-          setState(() {
-            _driverLocation = LatLng(lat, lng);
-            _etaMinutes = eta;
-          });
-
-          // Move map to driver location
-          try {
-            _mapController.move(_driverLocation!, 15);
-          } catch (_) {}
+        try {
+          final data = args[0] as Map<String, dynamic>;
+          final lat = (data['latitude'] as num?)?.toDouble();
+          final lng = (data['longitude'] as num?)?.toDouble();
+          final eta = (data['etaMinutes'] as num?)?.toDouble();
+          if (lat != null && lng != null && mounted) {
+            setState(() {
+              _driverLocation = LatLng(lat, lng);
+              _etaMinutes = eta;
+            });
+            try { _mapController.move(_driverLocation!, 15); } catch (_) {}
+          }
+        } catch (e) {
+          debugPrint('❌ Parse error: $e');
         }
       });
 
+      debugPrint('🔌 Starting...');
       await _hubConnection!.start();
+      debugPrint('✅ SignalR connected!');
 
       if (mounted) setState(() => _isConnected = true);
 
-      // Subscribe to delivery group
       await _hubConnection!.invoke(
         'SubscribeToDelivery',
         args: [_deliveryId],
       );
+      debugPrint('✅ Subscribed: $_deliveryId');
+
     } catch (e) {
-      debugPrint('SignalR connection error: $e');
+      debugPrint('❌ SignalR error: $e');
+      _hubConnection = null;
     }
   }
-
-  // ── Default map center ─────────────────────────────────
   LatLng get _mapCenter {
     if (_driverLocation != null) return _driverLocation!;
     if (_deliveryLocation != null) return _deliveryLocation!;
-    return const LatLng(31.5204, 74.3587); // Lahore default
+    return const LatLng(31.5204, 74.3587);
   }
 
   @override
@@ -217,7 +229,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         foregroundColor: AppColors.white,
         elevation: 0,
         actions: [
-          //  SignalR connection indicator
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Icon(
@@ -239,7 +250,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
 
-              // ── Error Banner ─────────────────────
               if (_error != null)
                 Container(
                   margin: const EdgeInsets.all(16),
@@ -259,7 +269,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                   ]),
                 ),
 
-              // ── ETA Banner ───────────────────────
               if (_etaMinutes != null)
                 Container(
                   margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -284,7 +293,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                   ]),
                 ),
 
-              // ── OpenStreetMap ────────────────────
               Container(
                 height: 280,
                 margin: const EdgeInsets.all(16),
@@ -294,20 +302,24 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(16),
-                  child: _driverLocation == null && _deliveryLocation == null
+                  child: _driverLocation == null
                       ? Container(
                     color: AppColors.surfaceLight,
                     child: const Center(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment:
+                        MainAxisAlignment.center,
                         children: [
                           Icon(Icons.local_shipping,
-                              size: 60, color: AppColors.primary),
+                              size: 60,
+                              color: AppColors.primary),
                           SizedBox(height: 12),
-                          Text('Waiting for driver location...',
+                          Text(
+                              'Waiting for driver location...',
                               style: TextStyle(
                                   fontSize: 14,
-                                  color: AppColors.textSecondary)),
+                                  color: AppColors
+                                      .textSecondary)),
                         ],
                       ),
                     ),
@@ -319,18 +331,13 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       initialZoom: 14,
                     ),
                     children: [
-                      //  OpenStreetMap tiles
                       TileLayer(
                         urlTemplate:
                         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName:
                         'com.example.food_delivery_app',
                       ),
-
-                      //  Markers
                       MarkerLayer(markers: [
-
-                        // Driver marker
                         if (_driverLocation != null)
                           Marker(
                             point: _driverLocation!,
@@ -341,7 +348,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                 color: AppColors.primary,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                    color: Colors.white, width: 3),
+                                    color: Colors.white,
+                                    width: 3),
                                 boxShadow: [
                                   BoxShadow(
                                     color: AppColors.primary
@@ -358,8 +366,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                               ),
                             ),
                           ),
-
-                        // Delivery location marker
                         if (_deliveryLocation != null)
                           Marker(
                             point: _deliveryLocation!,
@@ -370,7 +376,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                 color: AppColors.success,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                    color: Colors.white, width: 3),
+                                    color: Colors.white,
+                                    width: 3),
                               ),
                               child: const Icon(
                                 Icons.home,
@@ -385,12 +392,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 ),
               ),
 
-              // ── Driver Card ──────────────────────
               if (_driver != null ||
                   _statusLabel.toLowerCase() == 'out for delivery')
                 _DriverCard(driver: _driver),
 
-              // ── Timeline ─────────────────────────
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -416,12 +421,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                         active: false,
                         icon: Icons.verified),
                     _Step(
-                        title: _statusLabel.toLowerCase() == 'processing'
+                        title: _statusLabel.toLowerCase() ==
+                            'processing'
                             ? 'Preparing Order'
                             : 'Order Prepared',
                         subtitle: 'Being prepared by supplier',
                         completed: _isAtLeast('out for delivery'),
-                        active: _statusLabel.toLowerCase() == 'processing',
+                        active:
+                        _statusLabel.toLowerCase() == 'processing',
                         icon: Icons.inventory_2),
                     _Step(
                         title: 'Out for Delivery',
@@ -443,7 +450,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 ),
               ),
 
-              // ── Order Details ────────────────────
               Container(
                 margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 padding: const EdgeInsets.all(16),
@@ -490,21 +496,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 }
 
-// ══ Driver Card ══════════════════════════════════════════
 class _DriverCard extends StatelessWidget {
   final Map<String, dynamic>? driver;
   const _DriverCard({required this.driver});
 
   @override
   Widget build(BuildContext context) {
-    final name =
-    (driver?['name'] ?? driver?['fullName'] ?? 'Your Driver').toString();
+    final name = (driver?['name'] ?? driver?['fullName'] ?? 'Your Driver').toString();
     final rating = driver?['rating']?.toString() ?? '—';
     final trips = driver?['totalDeliveries']?.toString() ?? '';
-    final vehicle =
-    (driver?['vehicle'] ?? driver?['vehicleType'] ?? 'Van').toString();
-    final plate =
-    (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
+    final vehicle = (driver?['vehicle'] ?? driver?['vehicleType'] ?? 'Van').toString();
+    final plate = (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -515,39 +517,28 @@ class _DriverCard extends StatelessWidget {
           border: Border.all(color: AppColors.border)),
       child: Row(children: [
         Container(
-            width: 56,
-            height: 56,
+            width: 56, height: 56,
             decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.1),
                 shape: BoxShape.circle),
-            child:
-            const Icon(Icons.person, size: 30, color: AppColors.primary)),
+            child: const Icon(Icons.person, size: 30, color: AppColors.primary)),
         const SizedBox(width: 12),
-        Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name,
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis),
-              const SizedBox(height: 4),
-              Row(children: [
-                const Icon(Icons.star, size: 13, color: AppColors.warning),
-                const SizedBox(width: 4),
-                Text(
-                    trips.isNotEmpty
-                        ? '$rating ($trips deliveries)'
-                        : rating,
-                    style: const TextStyle(
-                        fontSize: 12, color: AppColors.textSecondary)),
-              ]),
-              const SizedBox(height: 4),
-              Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
-                  style: const TextStyle(
-                      fontSize: 11, color: AppColors.textHint)),
-            ])),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(name,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 4),
+          Row(children: [
+            const Icon(Icons.star, size: 13, color: AppColors.warning),
+            const SizedBox(width: 4),
+            Text(trips.isNotEmpty ? '$rating ($trips deliveries)' : rating,
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          ]),
+          const SizedBox(height: 4),
+          Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
+              style: const TextStyle(fontSize: 11, color: AppColors.textHint)),
+        ])),
         IconButton(
             icon: const Icon(Icons.phone, color: AppColors.primary),
             onPressed: () {},
@@ -558,19 +549,14 @@ class _DriverCard extends StatelessWidget {
   }
 }
 
-// ══ Tracking Step ═════════════════════════════════════════
 class _Step extends StatelessWidget {
   final String title, subtitle;
   final bool completed, active, isLast;
   final IconData icon;
 
-  const _Step(
-      {required this.title,
-        required this.subtitle,
-        required this.completed,
-        required this.active,
-        required this.icon,
-        this.isLast = false});
+  const _Step({required this.title, required this.subtitle,
+    required this.completed, required this.active,
+    required this.icon, this.isLast = false});
 
   @override
   Widget build(BuildContext context) {
@@ -581,69 +567,47 @@ class _Step extends StatelessWidget {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Column(children: [
         Container(
-            width: 36,
-            height: 36,
+            width: 36, height: 36,
             decoration: BoxDecoration(
                 color: (completed || active)
-                    ? c.withOpacity(0.1)
-                    : AppColors.surfaceLight,
+                    ? c.withOpacity(0.1) : AppColors.surfaceLight,
                 shape: BoxShape.circle,
                 border: Border.all(color: c, width: 2)),
             child: Icon(icon, size: 18, color: c)),
         if (!isLast)
-          Container(
-              width: 2,
-              height: 50,
+          Container(width: 2, height: 50,
               color: completed ? AppColors.success : AppColors.border),
       ]),
       const SizedBox(width: 12),
-      Expanded(
-          child: Padding(
-              padding: const EdgeInsets.only(bottom: 8, top: 6),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: (active || completed)
-                                ? AppColors.textPrimary
-                                : AppColors.textSecondary)),
-                    const SizedBox(height: 3),
-                    Text(subtitle,
-                        style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSecondary)),
-                  ]))),
+      Expanded(child: Padding(
+          padding: const EdgeInsets.only(bottom: 8, top: 6),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
+                color: (active || completed)
+                    ? AppColors.textPrimary : AppColors.textSecondary)),
+            const SizedBox(height: 3),
+            Text(subtitle, style: const TextStyle(
+                fontSize: 12, color: AppColors.textSecondary)),
+          ]))),
     ]);
   }
 }
 
-// ══ Detail Row ════════════════════════════════════════════
 class _DRow extends StatelessWidget {
   final IconData icon;
   final String label, value;
 
-  const _DRow(
-      {required this.icon, required this.label, required this.value});
+  const _DRow({required this.icon, required this.label, required this.value});
 
   @override
-  Widget build(BuildContext context) =>
-      Row(children: [
-        Icon(icon, size: 17, color: AppColors.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(
-            child: Text(label,
-                style: const TextStyle(
-                    fontSize: 13, color: AppColors.textSecondary))),
-        Flexible(
-            child: Text(value,
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary),
-                overflow: TextOverflow.ellipsis)),
-      ]);
+  Widget build(BuildContext context) => Row(children: [
+    Icon(icon, size: 17, color: AppColors.textSecondary),
+    const SizedBox(width: 10),
+    Expanded(child: Text(label,
+        style: const TextStyle(fontSize: 13, color: AppColors.textSecondary))),
+    Flexible(child: Text(value, textAlign: TextAlign.right,
+        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary),
+        overflow: TextOverflow.ellipsis)),
+  ]);
 }

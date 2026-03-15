@@ -245,11 +245,16 @@ class OrderSuccessScreen extends StatelessWidget {
               SizedBox(
                 width: double.infinity, height: 52,
                 child: ElevatedButton.icon(
-                  onPressed: orderData != null
-                      ? () => Navigator.push(context,
-                      MaterialPageRoute(builder: (_) =>
-                          OrderTrackingScreen(order: orderData!)))
-                      : null,
+    onPressed: () {
+
+    final orders = orderData?['orders'] as List?;
+    final firstOrder = orders?.isNotEmpty == true
+    ? orders!.first as Map<String, dynamic>
+        : orderData ?? {};
+    Navigator.push(context,
+    MaterialPageRoute(builder: (_) =>
+    OrderTrackingScreen(order: firstOrder)));
+    },
                   icon: const Icon(Icons.location_on),
                   label: const Text('Track Order'),
                 ),
