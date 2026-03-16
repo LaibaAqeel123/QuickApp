@@ -6,6 +6,8 @@ import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:signalr_netcore/signalr_client.dart';
+import 'package:signalr_netcore/http_connection_options.dart';
+import 'package:signalr_netcore/itransport.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:ui' as ui;
 
@@ -40,9 +42,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     'Delivered',
   ];
 
-  // ──────────────────────────────────────────────────────
-  //  LIFECYCLE
-  // ──────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -57,14 +56,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     super.dispose();
   }
 
-  // ──────────────────────────────────────────────────────
-  //  INIT
-  // ──────────────────────────────────────────────────────
   Future<void> _init() async {
     _driverId = widget.driverId ?? await AuthService.instance.getSavedDriverId();
 
     if (widget.delivery != null) {
-      // Keep your fix: single-line status check
       final rawStatus = (widget.delivery!['deliveryStatus'] ??
               widget.delivery!['status'] ?? '')
           .toString()
@@ -77,11 +72,12 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         _step           = initialStep;
       });
       _startPolling();
-      await _connectSignalR();   // ← from incoming
+      await _connectSignalR();
       return;
     }
 
     setState(() { _isLoading = true; _errorMsg = null; });
+
     final result = await AuthService.instance.getDeliveries(status: 2);
     if (!mounted) return;
 
@@ -100,7 +96,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         found = all.where((d) {
           final status = (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase();
           final dId    = (d['driverId'] ?? d['driver_id'] ?? '').toString();
-          return (status == 'pickedup' || status == 'picked_up' || status == '4') && dId == _driverId;
+          return (status == 'pickedup' || status == 'picked_up' || status == '4') &&
+              dId == _driverId;
         }).firstOrNull;
         if (found != null) foundStep = 1;
       }
@@ -109,16 +106,14 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
       if (found != null) {
         _startPolling();
-        await _connectSignalR();   // ← from incoming
+        await _connectSignalR();
       }
     } else {
       setState(() { _isLoading = false; _errorMsg = result.message ?? 'Failed to load delivery.'; });
     }
   }
 
-  // ──────────────────────────────────────────────────────
-  //  SIGNALR — from incoming branch, kept as-is
-  // ──────────────────────────────────────────────────────
+  // ── SignalR ───────────────────────────────────────────
   Future<void> _connectSignalR() async {
     try {
       final token = await AuthService.instance.getAccessToken();
@@ -143,22 +138,18 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       await _hubConnection!.start();
       debugPrint('✅ Driver SignalR connected!');
 
-      // Send location every 15 seconds
       _locationTimer = Timer.periodic(
         const Duration(seconds: 15),
         (_) => _sendLocation(),
       );
 
-      // Send immediately
       await _sendLocation();
     } catch (e) {
       debugPrint('❌ Driver SignalR error: $e');
     }
   }
 
-  // ──────────────────────────────────────────────────────
-  //  GPS LOCATION — from incoming branch, kept as-is
-  // ──────────────────────────────────────────────────────
+  // ── GPS Location ──────────────────────────────────────
   Future<void> _sendLocation() async {
     try {
       var permission = await Geolocator.checkPermission();
@@ -191,9 +182,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
-  // ──────────────────────────────────────────────────────
-  //  POLLING
-  // ──────────────────────────────────────────────────────
+  // ── Polling ───────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
@@ -208,7 +197,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (deliveryId.isEmpty || _driverId == null) return;
 
     final result = await AuthService.instance.getDeliveries(status: 2);
-    if (!mounted || _isSubmitting || !result.success || result.data == null) return;
+    if (!mounted || _isSubmitting) return;
+    if (!result.success || result.data == null) return;
+
     final all = result.data!.whereType<Map<String, dynamic>>().toList();
 
     final accepted = all.where((d) {
@@ -229,9 +220,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (pickedUp != null) setState(() { _activeDelivery = pickedUp; _step = 1; });
   }
 
-  // ──────────────────────────────────────────────────────
-  //  HELPERS
-  // ──────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────
   String _field(List<String> keys, [String fallback = 'N/A']) {
     final d = _activeDelivery;
     if (d == null) return fallback;
@@ -239,7 +228,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     return fallback;
   }
 
-  // Reads bytes immediately — no File(path) crash on Android
   Future<Uint8List?> _pickImageBytes(ImageSource source) async {
     try {
       final XFile? xfile = await _picker.pickImage(
@@ -270,10 +258,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         ),
       );
 
-  // ──────────────────────────────────────────────────────
-  //  CONFIRM PICKUP BOTTOM SHEET
-  //  Keep your fix: SingleChildScrollView to prevent keyboard overflow
-  // ──────────────────────────────────────────────────────
+  // ── Confirm Pickup Sheet ──────────────────────────────
   void _showPickupSheet() {
     String     notes      = '';
     Uint8List? photoBytes;
@@ -290,7 +275,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           padding: EdgeInsets.only(
               left: 20, right: 20, top: 20,
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-          // YOUR FIX: SingleChildScrollView prevents keyboard overflow
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               _handle(),
@@ -302,14 +286,14 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               const Text('Confirm you have picked up the items.',
                   style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
               const SizedBox(height: 16),
-
               Row(children: [
                 Expanded(child: OutlinedButton.icon(
                   onPressed: () async {
                     final bytes = await _pickImageBytes(ImageSource.camera);
                     if (bytes != null) setBS(() => photoBytes = bytes);
                   },
-                  icon: const Icon(Icons.camera_alt), label: const Text('Camera'),
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'),
                 )),
                 const SizedBox(width: 12),
                 Expanded(child: OutlinedButton.icon(
@@ -317,10 +301,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     final bytes = await _pickImageBytes(ImageSource.gallery);
                     if (bytes != null) setBS(() => photoBytes = bytes);
                   },
-                  icon: const Icon(Icons.photo_library), label: const Text('Gallery'),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'),
                 )),
               ]),
-
               if (photoBytes != null) ...[
                 const SizedBox(height: 12),
                 Container(
@@ -336,12 +320,12 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
                     onPressed: () => setBS(() => photoBytes = null),
-                    icon: const Icon(Icons.close, size: 16), label: const Text('Remove'),
+                    icon:  const Icon(Icons.close, size: 16),
+                    label: const Text('Remove'),
                     style: TextButton.styleFrom(foregroundColor: AppColors.error),
                   ),
                 ),
               ],
-
               const SizedBox(height: 12),
               TextField(
                 decoration: const InputDecoration(
@@ -409,24 +393,19 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (result.success) {
       setState(() => _step = 1);
       _snack('Items picked up! Head to delivery location. 🚗');
-      await _sendLocation();   // ← from incoming
+      await _sendLocation();
     } else {
       _snack(result.message ?? 'Failed to confirm pickup.', isError: true);
     }
   }
 
-  // ──────────────────────────────────────────────────────
-  //  COMPLETE DELIVERY BOTTOM SHEET
-  //  Keep your fix: showSignaturePad declared OUTSIDE builder
-  // ──────────────────────────────────────────────────────
+  // ── Complete Delivery Sheet ───────────────────────────
   void _showCompleteSheet() {
     final recipientCtrl  = TextEditingController();
     String     notes         = '';
     String?    recipientError;
     Uint8List? photoBytes;
     final      signatureCtrl = SignaturePadController();
-
-    // YOUR FIX: outside the builder so setBS() doesn't reset it to false
     bool showSignaturePad = false;
 
     showModalBottomSheet(
@@ -481,7 +460,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     final bytes = await _pickImageBytes(ImageSource.camera);
                     if (bytes != null) setBS(() => photoBytes = bytes);
                   },
-                  icon: const Icon(Icons.camera_alt), label: const Text('Camera'),
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'),
                 )),
                 const SizedBox(width: 12),
                 Expanded(child: OutlinedButton.icon(
@@ -489,7 +469,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     final bytes = await _pickImageBytes(ImageSource.gallery);
                     if (bytes != null) setBS(() => photoBytes = bytes);
                   },
-                  icon: const Icon(Icons.photo_library), label: const Text('Gallery'),
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'),
                 )),
               ]),
 
@@ -507,7 +488,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
                     onPressed: () => setBS(() => photoBytes = null),
-                    icon: const Icon(Icons.close, size: 16), label: const Text('Remove'),
+                    icon:  const Icon(Icons.close, size: 16),
+                    label: const Text('Remove'),
                     style: TextButton.styleFrom(foregroundColor: AppColors.error),
                   ),
                 ),
@@ -526,7 +508,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ]),
               const SizedBox(height: 8),
 
-              // YOUR FIX: update outer var then setBS — pad stays visible
               if (!showSignaturePad && !signatureCtrl.hasSignature)
                 SizedBox(
                   width: double.infinity,
@@ -535,7 +516,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                       showSignaturePad = true;
                       setBS(() {});
                     },
-                    icon: const Icon(Icons.draw), label: const Text('Draw Signature'),
+                    icon:  const Icon(Icons.draw),
+                    label: const Text('Draw Signature'),
                   ),
                 ),
 
@@ -567,7 +549,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   const SizedBox(width: 8),
                   ElevatedButton(
                     onPressed: () {
-                      // YOUR FIX: update outer var before setBS
                       showSignaturePad = false;
                       setBS(() {});
                     },
@@ -681,11 +662,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
     if (!mounted) return;
     setState(() => _isSubmitting = false);
+
     if (result.success) {
-      // Stop location tracking — from incoming
       _locationTimer?.cancel();
       _hubConnection?.stop();
-
       setState(() => _step = 2);
       Future.delayed(const Duration(milliseconds: 300), () {
         if (!mounted) return;
@@ -696,9 +676,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
-  // ──────────────────────────────────────────────────────
-  //  SUCCESS DIALOG
-  // ──────────────────────────────────────────────────────
   void _showSuccessDialog(Map<String, dynamic>? responseData) {
     final earnRaw = responseData?['totalAmount'] ??
         responseData?['driverEarnings'] ??
@@ -733,8 +710,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             child: ElevatedButton(
               onPressed: () async {
                 Navigator.pop(ctx);
-                final driverId =
-                    _driverId ?? await AuthService.instance.getSavedDriverId() ?? '';
+                final driverId = _driverId ??
+                    await AuthService.instance.getSavedDriverId() ?? '';
                 if (!mounted) return;
                 Navigator.pushReplacement(context,
                     MaterialPageRoute(builder: (_) => EarningsScreen(driverId: driverId)));
@@ -755,9 +732,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     );
   }
 
-  // ──────────────────────────────────────────────────────
-  //  BUILD
-  // ──────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final appBar = AppBar(
@@ -767,7 +741,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       elevation: 0,
       actions: [
         if (!_isLoading && _activeDelivery != null)
-          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _refreshDeliveryState()),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _refreshDeliveryState(),
+          ),
       ],
     );
 
@@ -814,7 +791,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           : SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
 
-                // Map placeholder — FAB now calls _sendLocation() from incoming
                 Container(
                   height: 200, color: AppColors.surfaceLight,
                   child: Stack(children: [
@@ -833,7 +809,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     Positioned(top: 12, right: 12,
                       child: FloatingActionButton.small(
                         heroTag: 'active_loc_fab',
-                        onPressed: () => _sendLocation(),   // ← from incoming
+                        onPressed: () => _sendLocation(),
                         backgroundColor: AppColors.white,
                         child: const Icon(Icons.my_location, color: AppColors.primary),
                       )),
@@ -915,7 +891,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 }
 
 // ══════════════════════════════════════════════════════════
-//  SIGNATURE PAD CONTROLLER (multi-stroke, ChangeNotifier)
+//  SIGNATURE PAD CONTROLLER
 // ══════════════════════════════════════════════════════════
 class SignaturePadController extends ChangeNotifier {
   final List<List<Offset>> _strokes = [];
@@ -1081,7 +1057,8 @@ class _StepDot extends StatelessWidget {
           width: 28, height: 28,
           decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: done ? AppColors.success : active ? AppColors.primary : AppColors.border),
+              color: done ? AppColors.success
+                  : active ? AppColors.primary : AppColors.border),
           child: Icon(done ? Icons.check : Icons.circle,
               size: done ? 16 : 10, color: Colors.white),
         ),
@@ -1097,11 +1074,13 @@ class _DeliveryStep extends StatelessWidget {
   final bool isCompleted, isActive;
   final Color buttonColor;
   final VoidCallback? onButtonPressed;
+
   const _DeliveryStep({
     required this.icon, required this.title, required this.address,
     required this.isCompleted, required this.isActive,
     required this.buttonText, required this.buttonColor, this.onButtonPressed,
   });
+
   @override
   Widget build(BuildContext context) {
     final Color color = isCompleted ? AppColors.success
@@ -1112,13 +1091,15 @@ class _DeliveryStep extends StatelessWidget {
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-              color: isActive ? buttonColor : AppColors.border, width: isActive ? 2 : 1)),
+              color: isActive ? buttonColor : AppColors.border,
+              width: isActive ? 2 : 1)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-                color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10)),
             child: Icon(isCompleted ? Icons.check_circle : icon, color: color, size: 22),
           ),
           const SizedBox(width: 12),

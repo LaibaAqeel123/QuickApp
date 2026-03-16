@@ -138,11 +138,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       // Get deliveryId from separate API
       final deliveryResult = await AuthService.instance
           .getDeliveryByOrderId(_orderId);
-      debugPrint('📦 DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
+      debugPrint(' DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
 
       if (deliveryResult.success && deliveryResult.data != null) {
         final dId = deliveryResult.data!['deliveryId']?.toString() ?? '';
-        debugPrint('🚚 DeliveryId found: $dId');
+        debugPrint(' DeliveryId found: $dId');
         if (dId.isNotEmpty) {
           setState(() => _detail = {...?_detail, 'deliveryId': dId});
           await _connectSignalR();
@@ -156,7 +156,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     debugPrint('🔌 SignalR connecting... deliveryId: $_deliveryId');
     try {
       final token = await AuthService.instance.getAccessToken();
-      debugPrint('🔑 Token: ${token != null ? "EXISTS" : "NULL"}');
+      debugPrint(' Token: ${token != null ? "EXISTS" : "NULL"}');
       if (token == null) return;
 
       final hubUrl =
@@ -177,7 +177,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       _hubConnection!.keepAliveIntervalInMilliseconds = 15000;
 
       _hubConnection!.on('LocationUpdated', (args) {
-        debugPrint('📍 LocationUpdated received: $args');
+        debugPrint(' LocationUpdated received: $args');
         if (args == null || args.isEmpty) return;
         try {
           final data = args[0] as Map<String, dynamic>;
@@ -192,13 +192,13 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
             try { _mapController.move(_driverLocation!, 15); } catch (_) {}
           }
         } catch (e) {
-          debugPrint('❌ Parse error: $e');
+          debugPrint(' Parse error: $e');
         }
       });
 
       debugPrint('🔌 Starting...');
       await _hubConnection!.start();
-      debugPrint('✅ SignalR connected!');
+      debugPrint(' SignalR connected!');
 
       if (mounted) setState(() => _isConnected = true);
 
@@ -206,10 +206,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         'SubscribeToDelivery',
         args: [_deliveryId],
       );
-      debugPrint('✅ Subscribed: $_deliveryId');
+      debugPrint(' Subscribed: $_deliveryId');
 
     } catch (e) {
-      debugPrint('❌ SignalR error: $e');
+      debugPrint(' SignalR error: $e');
       _hubConnection = null;
     }
   }
