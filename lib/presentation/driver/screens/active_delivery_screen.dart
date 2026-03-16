@@ -5,6 +5,8 @@ import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:signalr_netcore/signalr_client.dart';
+import 'package:geolocator/geolocator.dart';
 import 'dart:ui' as ui;
 
 class ActiveDeliveryScreen extends StatefulWidget {
@@ -26,7 +28,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
   int _step = 0;
 
-  Timer? _pollTimer;
+  Timer?         _pollTimer;
+  Timer?         _locationTimer;
+  HubConnection? _hubConnection;
 
   final ImagePicker _picker = ImagePicker();
 
@@ -36,6 +40,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     'Delivered',
   ];
 
+  // ──────────────────────────────────────────────────────
+  //  LIFECYCLE
+  // ──────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
@@ -45,24 +52,32 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _locationTimer?.cancel();
+    _hubConnection?.stop();
     super.dispose();
   }
 
+  // ──────────────────────────────────────────────────────
+  //  INIT
+  // ──────────────────────────────────────────────────────
   Future<void> _init() async {
     _driverId = widget.driverId ?? await AuthService.instance.getSavedDriverId();
 
     if (widget.delivery != null) {
+      // Keep your fix: single-line status check
       final rawStatus = (widget.delivery!['deliveryStatus'] ??
               widget.delivery!['status'] ?? '')
           .toString()
           .toLowerCase();
       final int initialStep =
           (rawStatus == 'pickedup' || rawStatus == 'picked_up' || rawStatus == '4') ? 1 : 0;
+
       setState(() {
         _activeDelivery = widget.delivery;
         _step           = initialStep;
       });
       _startPolling();
+      await _connectSignalR();   // ← from incoming
       return;
     }
 
@@ -91,15 +106,100 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       }
 
       setState(() { _activeDelivery = found; _step = foundStep; _isLoading = false; });
-      if (found != null) _startPolling();
+
+      if (found != null) {
+        _startPolling();
+        await _connectSignalR();   // ← from incoming
+      }
     } else {
       setState(() { _isLoading = false; _errorMsg = result.message ?? 'Failed to load delivery.'; });
     }
   }
 
+  // ──────────────────────────────────────────────────────
+  //  SIGNALR — from incoming branch, kept as-is
+  // ──────────────────────────────────────────────────────
+  Future<void> _connectSignalR() async {
+    try {
+      final token = await AuthService.instance.getAccessToken();
+      if (token == null) return;
+
+      final deliveryId = _activeDelivery?['deliveryId']?.toString() ?? '';
+      if (deliveryId.isEmpty) return;
+
+      final hubUrl =
+          'https://api.neptasolutions.co.uk/hubs/delivery-tracking?access_token=$token';
+
+      _hubConnection = HubConnectionBuilder()
+          .withUrl(
+            hubUrl,
+            options: HttpConnectionOptions(
+              transport: HttpTransportType.LongPolling,
+            ),
+          )
+          .withAutomaticReconnect()
+          .build();
+
+      await _hubConnection!.start();
+      debugPrint('✅ Driver SignalR connected!');
+
+      // Send location every 15 seconds
+      _locationTimer = Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => _sendLocation(),
+      );
+
+      // Send immediately
+      await _sendLocation();
+    } catch (e) {
+      debugPrint('❌ Driver SignalR error: $e');
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  //  GPS LOCATION — from incoming branch, kept as-is
+  // ──────────────────────────────────────────────────────
+  Future<void> _sendLocation() async {
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+      if (permission == LocationPermission.deniedForever) return;
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      final deliveryId = _activeDelivery?['deliveryId']?.toString();
+      if (deliveryId == null) return;
+
+      if (_hubConnection?.state == HubConnectionState.Connected) {
+        await _hubConnection!.invoke('SendLocation', args: [
+          position.latitude,
+          position.longitude,
+          deliveryId,
+          position.accuracy,
+          position.speed * 3.6,
+          position.heading,
+        ]);
+        debugPrint('📍 Location sent: ${position.latitude}, ${position.longitude}');
+      }
+    } catch (e) {
+      debugPrint('❌ Location send error: $e');
+    }
+  }
+
+  // ──────────────────────────────────────────────────────
+  //  POLLING
+  // ──────────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshDeliveryState(silent: true));
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _refreshDeliveryState(silent: true),
+    );
   }
 
   Future<void> _refreshDeliveryState({bool silent = false}) async {
@@ -129,6 +229,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (pickedUp != null) setState(() { _activeDelivery = pickedUp; _step = 1; });
   }
 
+  // ──────────────────────────────────────────────────────
+  //  HELPERS
+  // ──────────────────────────────────────────────────────
   String _field(List<String> keys, [String fallback = 'N/A']) {
     final d = _activeDelivery;
     if (d == null) return fallback;
@@ -136,10 +239,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     return fallback;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  //  PHOTO PICKER — reads bytes immediately, never stores XFile path.
-  //  Previews use MemoryImage — no content:// URI crash on Android.
-  // ─────────────────────────────────────────────────────────────────────────
+  // Reads bytes immediately — no File(path) crash on Android
   Future<Uint8List?> _pickImageBytes(ImageSource source) async {
     try {
       final XFile? xfile = await _picker.pickImage(
@@ -165,16 +265,15 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   Widget _handle() => Center(
         child: Container(
           width: 40, height: 4,
-          decoration: BoxDecoration(color: AppColors.border, borderRadius: BorderRadius.circular(2)),
+          decoration: BoxDecoration(
+              color: AppColors.border, borderRadius: BorderRadius.circular(2)),
         ),
       );
 
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
   //  CONFIRM PICKUP BOTTOM SHEET
-  //
-  //  FIX: wrapped in SingleChildScrollView so keyboard
-  //  push does not overflow the Notes text field.
-  // ══════════════════════════════════════════════════════
+  //  Keep your fix: SingleChildScrollView to prevent keyboard overflow
+  // ──────────────────────────────────────────────────────
   void _showPickupSheet() {
     String     notes      = '';
     Uint8List? photoBytes;
@@ -190,9 +289,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         return Padding(
           padding: EdgeInsets.only(
               left: 20, right: 20, top: 20,
-              // keyboard-aware bottom padding
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-          // ── FIX: SingleChildScrollView prevents overflow when keyboard appears ──
+          // YOUR FIX: SingleChildScrollView prevents keyboard overflow
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               _handle(),
@@ -311,28 +409,24 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (result.success) {
       setState(() => _step = 1);
       _snack('Items picked up! Head to delivery location. 🚗');
+      await _sendLocation();   // ← from incoming
     } else {
       _snack(result.message ?? 'Failed to confirm pickup.', isError: true);
     }
   }
 
-  // ══════════════════════════════════════════════════════
+  // ──────────────────────────────────────────────────────
   //  COMPLETE DELIVERY BOTTOM SHEET
-  //
-  //  FIX: showSignaturePad is declared OUTSIDE StatefulBuilder
-  //  so it is not reset to false on every setBS() call.
-  //  Previously it was inside the builder → tapping "Draw
-  //  Signature" called setBS() which re-ran the builder and
-  //  immediately reset showSignaturePad = false → pad never appeared.
-  // ══════════════════════════════════════════════════════
+  //  Keep your fix: showSignaturePad declared OUTSIDE builder
+  // ──────────────────────────────────────────────────────
   void _showCompleteSheet() {
-    final recipientCtrl   = TextEditingController();
-    String     notes          = '';
+    final recipientCtrl  = TextEditingController();
+    String     notes         = '';
     String?    recipientError;
     Uint8List? photoBytes;
-    final      signatureCtrl  = SignaturePadController();
+    final      signatureCtrl = SignaturePadController();
 
-    // ── FIX: declared here (outside builder) so it survives setBS() calls ──
+    // YOUR FIX: outside the builder so setBS() doesn't reset it to false
     bool showSignaturePad = false;
 
     showModalBottomSheet(
@@ -349,7 +443,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-
               _handle(),
               const SizedBox(height: 16),
               const Text('Complete Delivery',
@@ -360,7 +453,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
               const SizedBox(height: 16),
 
-              // ── Recipient name (required) ────────────
+              // Recipient name (required)
               TextField(
                 controller: recipientCtrl,
                 decoration: InputDecoration(
@@ -375,7 +468,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── Delivery photo ───────────────────────
+              // Delivery photo
               const Align(
                 alignment: Alignment.centerLeft,
                 child: Text('Delivery Photo (optional)',
@@ -419,10 +512,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ),
                 ),
               ],
-
               const SizedBox(height: 16),
 
-              // ── Signature section ────────────────────
+              // Signature section
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Signature (optional)',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
@@ -434,13 +526,12 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ]),
               const SizedBox(height: 8),
 
-              // "Draw Signature" button — only when pad is hidden and no sig yet
+              // YOUR FIX: update outer var then setBS — pad stays visible
               if (!showSignaturePad && !signatureCtrl.hasSignature)
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
                     onPressed: () {
-                      // ── FIX: update the outer variable, then call setBS ──
                       showSignaturePad = true;
                       setBS(() {});
                     },
@@ -448,7 +539,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ),
                 ),
 
-              // Signature pad canvas
               if (showSignaturePad) ...[
                 Container(
                   height: 160,
@@ -477,7 +567,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   const SizedBox(width: 8),
                   ElevatedButton(
                     onPressed: () {
-                      // ── FIX: update outer variable before setBS ──
+                      // YOUR FIX: update outer var before setBS
                       showSignaturePad = false;
                       setBS(() {});
                     },
@@ -486,7 +576,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 ]),
               ],
 
-              // Signature preview (after "Done")
               if (!showSignaturePad && signatureCtrl.hasSignature) ...[
                 Container(
                   height: 70, width: double.infinity,
@@ -504,8 +593,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ],
 
               const SizedBox(height: 16),
-
-              // ── Notes ────────────────────────────────
               TextField(
                 decoration: const InputDecoration(
                   labelText: 'Notes (optional)',
@@ -517,7 +604,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── Submit ───────────────────────────────
               SizedBox(
                 width: double.infinity, height: 52,
                 child: ElevatedButton(
@@ -573,7 +659,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     debugPrint('║  driverId     : $_driverId');
     debugPrint('║  deliveryId   : $deliveryId');
     debugPrint('║  recipientName: $recipientName');
-    debugPrint('║  notes        : $notes');
     debugPrint('║  hasPhoto     : ${photoBytes != null}');
     debugPrint('║  hasSignature : ${signatureBytes != null}');
     debugPrint('╚══════════════════════════════════════╝');
@@ -597,6 +682,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (!mounted) return;
     setState(() => _isSubmitting = false);
     if (result.success) {
+      // Stop location tracking — from incoming
+      _locationTimer?.cancel();
+      _hubConnection?.stop();
+
       setState(() => _step = 2);
       Future.delayed(const Duration(milliseconds: 300), () {
         if (!mounted) return;
@@ -607,6 +696,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
+  // ──────────────────────────────────────────────────────
+  //  SUCCESS DIALOG
+  // ──────────────────────────────────────────────────────
   void _showSuccessDialog(Map<String, dynamic>? responseData) {
     final earnRaw = responseData?['totalAmount'] ??
         responseData?['driverEarnings'] ??
@@ -663,6 +755,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     );
   }
 
+  // ──────────────────────────────────────────────────────
+  //  BUILD
+  // ──────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final appBar = AppBar(
@@ -719,6 +814,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           : SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
 
+                // Map placeholder — FAB now calls _sendLocation() from incoming
                 Container(
                   height: 200, color: AppColors.surfaceLight,
                   child: Stack(children: [
@@ -730,14 +826,14 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                               color: AppColors.textPrimary)),
                       if (distanceStr.isNotEmpty) ...[
                         const SizedBox(height: 4),
-                        Text(distanceStr,
-                            style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                        Text(distanceStr, style: const TextStyle(
+                            fontSize: 13, color: AppColors.textSecondary)),
                       ],
                     ])),
                     Positioned(top: 12, right: 12,
                       child: FloatingActionButton.small(
                         heroTag: 'active_loc_fab',
-                        onPressed: () {},
+                        onPressed: () => _sendLocation(),   // ← from incoming
                         backgroundColor: AppColors.white,
                         child: const Icon(Icons.my_location, color: AppColors.primary),
                       )),
@@ -752,8 +848,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                         style: const TextStyle(fontSize: 20,
                             fontWeight: FontWeight.bold, color: AppColors.white)),
                     const SizedBox(height: 4),
-                    Text(orderNum,
-                        style: const TextStyle(fontSize: 13, color: AppColors.white)),
+                    Text(orderNum, style: const TextStyle(fontSize: 13, color: AppColors.white)),
                   ]),
                 ),
 
@@ -773,13 +868,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: _DeliveryStep(
-                    icon: Icons.store,
-                    title: 'Pickup Location',
-                    address: pickupAddress,
-                    isCompleted: _step > 0,
-                    isActive: _step == 0,
-                    buttonText: 'Confirm Pickup',
-                    buttonColor: AppColors.primary,
+                    icon: Icons.store, title: 'Pickup Location',
+                    address: pickupAddress, isCompleted: _step > 0, isActive: _step == 0,
+                    buttonText: 'Confirm Pickup', buttonColor: AppColors.primary,
                     onButtonPressed: _step == 0 ? _showPickupSheet : null,
                   ),
                 ),
@@ -787,13 +878,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   child: _DeliveryStep(
-                    icon: Icons.location_on,
-                    title: 'Delivery Location',
-                    address: deliveryAddress,
-                    isCompleted: _step >= 2,
-                    isActive: _step == 1,
-                    buttonText: 'Complete Delivery',
-                    buttonColor: AppColors.success,
+                    icon: Icons.location_on, title: 'Delivery Location',
+                    address: deliveryAddress, isCompleted: _step >= 2, isActive: _step == 1,
+                    buttonText: 'Complete Delivery', buttonColor: AppColors.success,
                     onButtonPressed: _step == 1 ? _showCompleteSheet : null,
                   ),
                 ),
@@ -838,15 +925,8 @@ class SignaturePadController extends ChangeNotifier {
       _strokes.isNotEmpty ||
       (_currentStroke != null && _currentStroke!.isNotEmpty);
 
-  void startStroke(Offset point) {
-    _currentStroke = [point];
-    notifyListeners();
-  }
-
-  void addPoint(Offset point) {
-    _currentStroke?.add(point);
-    notifyListeners();
-  }
+  void startStroke(Offset point) { _currentStroke = [point]; notifyListeners(); }
+  void addPoint(Offset point)    { _currentStroke?.add(point); notifyListeners(); }
 
   void endStroke() {
     if (_currentStroke != null && _currentStroke!.isNotEmpty) {
@@ -856,11 +936,7 @@ class SignaturePadController extends ChangeNotifier {
     }
   }
 
-  void clear() {
-    _strokes.clear();
-    _currentStroke = null;
-    notifyListeners();
-  }
+  void clear() { _strokes.clear(); _currentStroke = null; notifyListeners(); }
 
   List<List<Offset>> get allStrokes {
     final all = List<List<Offset>>.from(_strokes);
