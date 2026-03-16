@@ -6,6 +6,8 @@ import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/driver/screens/earnings_screen.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:signalr_netcore/signalr_client.dart';
+import 'package:signalr_netcore/http_connection_options.dart';
+import 'package:signalr_netcore/itransport.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:ui' as ui;
 
@@ -64,9 +66,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           .toLowerCase();
 
       final int initialStep =
-      (rawStatus == 'pickedup' || rawStatus == 'picked_up' || rawStatus == '4')
-          ? 1
-          : 0;
+          (rawStatus == 'pickedup' || rawStatus == 'picked_up' || rawStatus == '4')
+              ? 1
+              : 0;
 
       setState(() {
         _activeDelivery = widget.delivery;
@@ -139,24 +141,22 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
 
       _hubConnection = HubConnectionBuilder()
           .withUrl(
-        hubUrl,
-        options: HttpConnectionOptions(
-          transport: HttpTransportType.LongPolling,
-        ),
-      )
+            hubUrl,
+            options: HttpConnectionOptions(
+              transport: HttpTransportType.LongPolling,
+            ),
+          )
           .withAutomaticReconnect()
           .build();
 
       await _hubConnection!.start();
       debugPrint(' Driver SignalR connected!');
 
-      // Send location every 15 seconds
       _locationTimer = Timer.periodic(
         const Duration(seconds: 15),
-            (_) => _sendLocation(),
+        (_) => _sendLocation(),
       );
 
-      // Send immediately
       await _sendLocation();
     } catch (e) {
       debugPrint(' Driver SignalR error: $e');
@@ -189,7 +189,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           position.speed * 3.6,
           position.heading,
         ]);
-        debugPrint(' Location sent: ${position.latitude}, ${position.longitude}');
+        debugPrint('📍 Location sent: ${position.latitude}, ${position.longitude}');
       }
     } catch (e) {
       debugPrint(' Location send error: $e');
@@ -201,7 +201,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
       const Duration(seconds: 30),
-          (_) => _refreshDeliveryState(silent: true),
+      (_) => _refreshDeliveryState(silent: true),
     );
   }
 
@@ -209,7 +209,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     if (!mounted || _activeDelivery == null || _isSubmitting) return;
 
     final deliveryId =
-    (_activeDelivery!['deliveryId'] ?? _activeDelivery!['id'] ?? '').toString();
+        (_activeDelivery!['deliveryId'] ?? _activeDelivery!['id'] ?? '').toString();
     if (deliveryId.isEmpty || _driverId == null) return;
 
     final result = await AuthService.instance.getDeliveries(status: 2);
@@ -276,13 +276,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
   }
 
   Widget _handle() => Center(
-    child: Container(
-      width: 40, height: 4,
-      decoration: BoxDecoration(
-          color: AppColors.border,
-          borderRadius: BorderRadius.circular(2)),
-    ),
-  );
+        child: Container(
+          width: 40, height: 4,
+          decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(2)),
+        ),
+      );
 
   // ── Confirm Pickup Sheet ─────────────────────────────
   void _showPickupSheet() {
@@ -301,85 +301,88 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           padding: EdgeInsets.only(
               left: 20, right: 20, top: 20,
               bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            _handle(),
-            const SizedBox(height: 16),
-            const Text('Confirm Pickup',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 4),
-            const Text('Confirm you have picked up the items.',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
-            const SizedBox(height: 16),
-            Row(children: [
-              Expanded(child: OutlinedButton.icon(
-                onPressed: () async {
-                  final bytes = await _pickImageBytes(ImageSource.camera);
-                  if (bytes != null) setBS(() => photoBytes = bytes);
-                },
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Camera'),
-              )),
-              const SizedBox(width: 12),
-              Expanded(child: OutlinedButton.icon(
-                onPressed: () async {
-                  final bytes = await _pickImageBytes(ImageSource.gallery);
-                  if (bytes != null) setBS(() => photoBytes = bytes);
-                },
-                icon: const Icon(Icons.photo_library),
-                label: const Text('Gallery'),
-              )),
-            ]),
-            if (photoBytes != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                height: 100, width: double.infinity,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.border),
-                  image: DecorationImage(
-                    image: MemoryImage(photoBytes!),
-                    fit:   BoxFit.cover,
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              _handle(),
+              const SizedBox(height: 16),
+              const Text('Confirm Pickup',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              const Text('Confirm you have picked up the items.',
+                  style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final bytes = await _pickImageBytes(ImageSource.camera);
+                    if (bytes != null) setBS(() => photoBytes = bytes);
+                  },
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Camera'),
+                )),
+                const SizedBox(width: 12),
+                Expanded(child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final bytes = await _pickImageBytes(ImageSource.gallery);
+                    if (bytes != null) setBS(() => photoBytes = bytes);
+                  },
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Gallery'),
+                )),
+              ]),
+              if (photoBytes != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  height: 100, width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.border),
+                    image: DecorationImage(
+                      image: MemoryImage(photoBytes!),
+                      fit:   BoxFit.cover,
+                    ),
                   ),
                 ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: () => setBS(() => photoBytes = null),
+                    icon:  const Icon(Icons.close, size: 16),
+                    label: const Text('Remove'),
+                    style: TextButton.styleFrom(foregroundColor: AppColors.error),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              TextField(
+                decoration: const InputDecoration(
+                  labelText: 'Notes (optional)',
+                  hintText:  'e.g. Picked up from store',
+                  border:    OutlineInputBorder(),
+                ),
+                onChanged: (v) => notes = v,
+                maxLines:  3,
               ),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: () => setBS(() => photoBytes = null),
-                  icon:  const Icon(Icons.close, size: 16),
-                  label: const Text('Remove'),
-                  style: TextButton.styleFrom(foregroundColor: AppColors.error),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity, height: 52,
+                child: ElevatedButton(
+                  onPressed: sub ? null : () async {
+                    setBS(() => sub = true);
+                    Navigator.of(ctx).pop();
+                    await _doConfirmPickup(notes: notes.trim(), photoBytes: photoBytes);
+                  },
+                  child: sub
+                      ? const SizedBox(width: 22, height: 22,
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
+                      : const Text('Confirm Pickup', style: TextStyle(fontSize: 16)),
                 ),
               ),
-            ],
-            const SizedBox(height: 12),
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Notes (optional)',
-                hintText:  'e.g. Picked up from store',
-                border:    OutlineInputBorder(),
-              ),
-              onChanged: (v) => notes = v,
-              maxLines:  2,
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity, height: 52,
-              child: ElevatedButton(
-                onPressed: sub ? null : () async {
-                  setBS(() => sub = true);
-                  Navigator.of(ctx).pop();
-                  await _doConfirmPickup(notes: notes.trim(), photoBytes: photoBytes);
-                },
-                child: sub
-                    ? const SizedBox(width: 22, height: 22,
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
-                    : const Text('Confirm Pickup', style: TextStyle(fontSize: 16)),
-              ),
-            ),
-          ]),
+              const SizedBox(height: 8),
+            ]),
+          ),
         );
       }),
     );
@@ -408,13 +411,17 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       photoFileName: 'pickup_photo.jpg',
     );
 
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  CONFIRM PICKUP — RESPONSE');
+    debugPrint('║  success: ${result.success} | message: ${result.message}');
+    debugPrint('╚══════════════════════════════════════╝');
+
     if (!mounted) return;
     setState(() => _isSubmitting = false);
 
     if (result.success) {
       setState(() => _step = 1);
-      _snack('Items picked up! Head to delivery location. 🚗');
-      // Send location immediately after pickup
+      _snack('Items picked up! Head to delivery location. ');
       await _sendLocation();
     } else {
       _snack(result.message ?? 'Failed to confirm pickup.', isError: true);
@@ -428,6 +435,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     String?    recipientError;
     Uint8List? photoBytes;
     final      signatureCtrl  = SignaturePadController();
+    bool showSignaturePad = false;
 
     showModalBottomSheet(
       context: context,
@@ -435,8 +443,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(builder: (ctx, setBS) {
-        bool sub             = false;
-        bool showSignaturePad = false;
+        bool sub = false;
 
         return Padding(
           padding: EdgeInsets.only(
@@ -533,16 +540,19 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    onPressed: () => setBS(() => showSignaturePad = true),
+                    onPressed: () {
+                      showSignaturePad = true;
+                      setBS(() {});
+                    },
                     icon:  const Icon(Icons.draw),
                     label: const Text('Draw Signature'),
                   ),
                 ),
               if (showSignaturePad) ...[
                 Container(
-                  height: 150,
+                  height: 160,
                   decoration: BoxDecoration(
-                    border:       Border.all(color: AppColors.border),
+                    border:       Border.all(color: AppColors.primary, width: 1.5),
                     borderRadius: BorderRadius.circular(8),
                     color:        Colors.white,
                   ),
@@ -554,6 +564,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 4),
+                Text('Draw your signature above',
+                    style: TextStyle(fontSize: 11, color: AppColors.textHint)),
                 const SizedBox(height: 8),
                 Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                   TextButton(
@@ -562,14 +575,17 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ),
                   const SizedBox(width: 8),
                   ElevatedButton(
-                    onPressed: () => setBS(() => showSignaturePad = false),
+                    onPressed: () {
+                      showSignaturePad = false;
+                      setBS(() {});
+                    },
                     child: const Text('Done'),
                   ),
                 ]),
               ],
               if (!showSignaturePad && signatureCtrl.hasSignature) ...[
                 Container(
-                  height: 60, width: double.infinity,
+                  height: 70, width: double.infinity,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: AppColors.border),
@@ -590,7 +606,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   border:    OutlineInputBorder(),
                 ),
                 onChanged: (v) => notes = v,
-                maxLines:  2,
+                maxLines: 3,
               ),
               const SizedBox(height: 16),
               SizedBox(
@@ -618,7 +634,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   style: ElevatedButton.styleFrom(backgroundColor: AppColors.success),
                   child: sub
                       ? const SizedBox(width: 22, height: 22,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5))
                       : const Text('Complete Delivery', style: TextStyle(fontSize: 16)),
                 ),
               ),
@@ -655,11 +671,15 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       signatureFileName: 'signature.png',
     );
 
+    debugPrint('\n╔══════════════════════════════════════╗');
+    debugPrint('║  COMPLETE DELIVERY — RESPONSE');
+    debugPrint('║  success: ${result.success} | message: ${result.message}');
+    debugPrint('╚══════════════════════════════════════╝');
+
     if (!mounted) return;
     setState(() => _isSubmitting = false);
 
     if (result.success) {
-      // Stop sending location
       _locationTimer?.cancel();
       _hubConnection?.stop();
 
@@ -679,7 +699,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
         _activeDelivery?['driverEarnings'] ??
         _activeDelivery?['payment'];
     final paymentStr =
-    earnRaw != null ? '£${(earnRaw as num).toStringAsFixed(2)}' : '';
+        earnRaw != null ? '£${(earnRaw as num).toStringAsFixed(2)}' : '';
 
     showDialog(
       context: context,
@@ -790,16 +810,16 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       appBar: appBar,
       body: _isSubmitting
           ? const Center(child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Processing...', style: TextStyle(fontSize: 16,
-                color: AppColors.textSecondary)),
-          ]))
-          : SingleChildScrollView(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Processing...', style: TextStyle(fontSize: 16,
+                    color: AppColors.textSecondary)),
+              ]))
+          : SingleChildScrollView(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                 Container(
                   height: 200,
                   color: AppColors.surfaceLight,
@@ -821,13 +841,13 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                           ],
                         ])),
                     Positioned(top: 12, right: 12,
-                        child: FloatingActionButton.small(
-                          heroTag: 'active_loc_fab',
-                          onPressed: () => _sendLocation(),
-                          backgroundColor: AppColors.white,
-                          child: const Icon(Icons.my_location,
-                              color: AppColors.primary),
-                        )),
+                      child: FloatingActionButton.small(
+                        heroTag: 'active_loc_fab',
+                        onPressed: () => _sendLocation(),
+                        backgroundColor: AppColors.white,
+                        child: const Icon(Icons.my_location,
+                            color: AppColors.primary),
+                      )),
                   ]),
                 ),
 
@@ -904,23 +924,23 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Delivery Details',
-                              style: TextStyle(fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppColors.textPrimary)),
-                          const SizedBox(height: 12),
-                          if (distanceStr.isNotEmpty)
-                            _InfoRow(icon: Icons.route,
-                                label: 'Distance', value: distanceStr),
-                          if (paymentStr.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            _InfoRow(icon: Icons.attach_money,
-                                label: 'Earnings', value: paymentStr),
-                          ],
-                          const SizedBox(height: 8),
-                          _InfoRow(icon: Icons.flag,
-                              label: 'Status', value: _stepLabels[_step]),
-                        ]),
+                      const Text('Delivery Details',
+                          style: TextStyle(fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary)),
+                      const SizedBox(height: 12),
+                      if (distanceStr.isNotEmpty)
+                        _InfoRow(icon: Icons.route,
+                            label: 'Distance', value: distanceStr),
+                      if (paymentStr.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        _InfoRow(icon: Icons.attach_money,
+                            label: 'Earnings', value: paymentStr),
+                      ],
+                      const SizedBox(height: 8),
+                      _InfoRow(icon: Icons.flag,
+                          label: 'Status', value: _stepLabels[_step]),
+                    ]),
                   ),
                 ),
               ])),
@@ -935,7 +955,7 @@ class SignaturePadController extends ChangeNotifier {
 
   bool get hasSignature =>
       _strokes.isNotEmpty ||
-          (_currentStroke != null && _currentStroke!.isNotEmpty);
+      (_currentStroke != null && _currentStroke!.isNotEmpty);
 
   void startStroke(Offset point) {
     _currentStroke = [point];
@@ -1018,18 +1038,18 @@ class SignaturePad extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-    behavior: HitTestBehavior.opaque,
-    onPanStart:  (d) => controller.startStroke(d.localPosition),
-    onPanUpdate: (d) => controller.addPoint(d.localPosition),
-    onPanEnd:    (_) { controller.endStroke(); onDrawEnd?.call(); },
-    child: AnimatedBuilder(
-      animation: controller,
-      builder: (_, __) => CustomPaint(
-        size: const Size(double.infinity, 150),
-        painter: _SignaturePainter(strokes: controller.allStrokes),
-      ),
-    ),
-  );
+        behavior: HitTestBehavior.opaque,
+        onPanStart:  (d) => controller.startStroke(d.localPosition),
+        onPanUpdate: (d) => controller.addPoint(d.localPosition),
+        onPanEnd:    (_) { controller.endStroke(); onDrawEnd?.call(); },
+        child: AnimatedBuilder(
+          animation: controller,
+          builder: (_, __) => CustomPaint(
+            size: const Size(double.infinity, 160),
+            painter: _SignaturePainter(strokes: controller.allStrokes),
+          ),
+        ),
+      );
 }
 
 class _SignaturePainter extends CustomPainter {
@@ -1071,12 +1091,12 @@ class SignaturePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: controller,
-    builder: (_, __) => CustomPaint(
-      size: const Size(double.infinity, 60),
-      painter: _SignaturePainter(strokes: controller.allStrokes),
-    ),
-  );
+        animation: controller,
+        builder: (_, __) => CustomPaint(
+          size: const Size(double.infinity, 70),
+          painter: _SignaturePainter(strokes: controller.allStrokes),
+        ),
+      );
 }
 
 // ══ Helper Widgets ════════════════════════════════════════
@@ -1085,20 +1105,20 @@ class _NoActiveDelivery extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Padding(padding: const EdgeInsets.all(32),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.local_shipping_outlined, size: 80,
-              color: AppColors.textHint),
-          const SizedBox(height: 20),
-          const Text('No Active Delivery',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold,
-                  color: AppColors.textSecondary)),
-          const SizedBox(height: 10),
-          const Text('Accept a job from the Jobs tab\nto start a delivery.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 14, color: AppColors.textHint)),
-        ])),
-  );
+        child: Padding(padding: const EdgeInsets.all(32),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.local_shipping_outlined, size: 80,
+                color: AppColors.textHint),
+            const SizedBox(height: 20),
+            const Text('No Active Delivery',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold,
+                    color: AppColors.textSecondary)),
+            const SizedBox(height: 10),
+            const Text('Accept a job from the Jobs tab\nto start a delivery.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: AppColors.textHint)),
+          ])),
+      );
 }
 
 class _StepDot extends StatelessWidget {
