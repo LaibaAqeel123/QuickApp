@@ -189,7 +189,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           position.speed * 3.6,
           position.heading,
         ]);
-        debugPrint('Location sent: ${position.latitude}, ${position.longitude}');
+        debugPrint('📍 Location sent: ${position.latitude}, ${position.longitude}');
       }
     } catch (e) {
       debugPrint(' Location send error: $e');
