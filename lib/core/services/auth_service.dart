@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 // ══════════════════════════════════════════════════════════
 //  API CONSTANTS
@@ -23,6 +24,7 @@ class ApiConstants {
   static String driverLocation(String id)  => '$baseUrl/api/Drivers/$id/location';
   static String driverUploadDoc(String id) => '$baseUrl/api/Drivers/$id/upload-document';
   static String driverStats(String id)     => '$baseUrl/api/Drivers/$id/stats';
+  static String saveFcmToken(String id)    => '$baseUrl/api/Drivers/$id/fcm-token';
 
   static const String cart          = '$baseUrl/api/cart';
   static const String cartItems     = '$baseUrl/api/cart/items';
@@ -93,6 +95,7 @@ class _PrefKeys {
   static const String userRole     = 'user_role';
   static const String userId       = 'user_id';
   static const String driverId     = 'driver_id';
+  static const String fcmToken     = 'fcm_token';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -103,9 +106,9 @@ class AuthService {
   static final AuthService instance = AuthService._();
 
   Map<String, String> get _jsonHeaders => {
-        'Content-Type': 'application/json',
-        'Accept':       'application/json',
-      };
+    'Content-Type': 'application/json',
+    'Accept':       'application/json',
+  };
 
   Future<Map<String, String>> get _authHeaders async {
     final token = await getAccessToken();
@@ -231,6 +234,7 @@ class AuthService {
     await prefs.remove(_PrefKeys.userRole);
     await prefs.remove(_PrefKeys.userId);
     await prefs.remove(_PrefKeys.driverId);
+    await prefs.remove(_PrefKeys.fcmToken);
   }
 
   // ══════════════════════════════════════════════════════
@@ -251,12 +255,9 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'email': email,
-        'password': password,
-        'firstName': firstName,
-        'lastName': lastName,
-        'phoneNumber': phoneNumber,
-        'userType': userType,
+        'email': email, 'password': password,
+        'firstName': firstName, 'lastName': lastName,
+        'phoneNumber': phoneNumber, 'userType': userType,
         'businessName': businessName ?? '',
         'licenseNumber': licenseNumber ?? '',
         'licensePlate': licensePlate ?? '',
@@ -266,7 +267,7 @@ class AuthService {
       _log('REGISTER REQUEST', ApiConstants.register);
       final response = await http
           .post(Uri.parse(ApiConstants.register),
-              headers: _jsonHeaders, body: jsonEncode(body))
+          headers: _jsonHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 60));
       _log('REGISTER RESPONSE', ApiConstants.register,
           status: response.statusCode, body: response.body);
@@ -277,20 +278,16 @@ class AuthService {
           await saveTokens(
             accessToken: token,
             refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
-            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])
-                ?.toLowerCase(),
+            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])?.toLowerCase(),
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
             driverId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -301,29 +298,23 @@ class AuthService {
     required String fileName,
   }) async {
     try {
-      final uri = Uri.parse(
-          '${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
+      final uri = Uri.parse('${ApiConstants.driverUploadDoc(driverId)}?documentType=$documentType');
       final request = http.MultipartRequest('POST', uri);
       final token = await getAccessToken();
       if (token != null) {
         request.headers['Authorization'] = 'Bearer $token';
         request.headers['Accept'] = 'application/json';
       }
-      request.files.add(
-          http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
-      final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
+      request.files.add(http.MultipartFile.fromBytes('file', fileBytes, filename: fileName));
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -338,25 +329,37 @@ class AuthService {
       _log('LOGIN REQUEST', ApiConstants.login, extra: 'email: $email');
       final response = await http
           .post(Uri.parse(ApiConstants.login),
-              headers: _jsonHeaders,
-              body: jsonEncode({'email': email, 'password': password}))
+          headers: _jsonHeaders,
+          body: jsonEncode({'email': email, 'password': password}))
           .timeout(const Duration(seconds: 30));
       _log('LOGIN RESPONSE', ApiConstants.login,
           status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
-        final token = _extract(
-            resBody, ['token', 'access_token', 'accessToken', 'data.token']);
+        final token = _extract(resBody, ['token', 'access_token', 'accessToken', 'data.token']);
         if (token != null) {
           await saveTokens(
             accessToken:  token,
             refreshToken: _extract(resBody, ['refreshToken', 'refresh_token']),
-            role: _extract(
-                    resBody, ['role', 'userType', 'user.role', 'data.role'])
-                ?.toLowerCase(),
+            role: _extract(resBody, ['role', 'userType', 'user.role', 'data.role'])?.toLowerCase(),
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
+
+          //  Save FCM Token for Driver
+          try {
+            final role = _extract(resBody, ['role']);
+            if (role?.toLowerCase() == 'driver') {
+              final fcmToken = await FirebaseMessaging.instance.getToken();
+              debugPrint(' FCM Token: $fcmToken');
+              if (fcmToken != null) {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString(_PrefKeys.fcmToken, fcmToken);
+              }
+            }
+          } catch (e) {
+            debugPrint('FCM token error: $e');
+          }
 
           // Fetch /api/auth/me to resolve the real driverId
           try {
@@ -368,34 +371,32 @@ class AuthService {
 
             if (profileResp.statusCode == 200) {
               final profile = _safeJsonDecode(profileResp.body);
-
               final dId = _extract(profile, [
-                'driverId',
-                'driver_id',
-                'driver.id',
-                'driver.driverId',
-                'driverProfile.id',
-                'driverProfile.driverId',
-                'driverDetails.id',
-                'driverDetails.driverId',
+                'driverId', 'driver_id', 'driver.id', 'driver.driverId',
+                'driverProfile.id', 'driverProfile.driverId',
+                'driverDetails.id', 'driverDetails.driverId',
               ]);
 
               if (dId != null && dId.isNotEmpty) {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString(_PrefKeys.driverId, dId);
-                debugPrint('[login] ✅ driverId saved: $dId');
+                debugPrint('[login]  driverId saved: $dId');
+                await saveFcmTokenToServer(dId);
               } else {
-                debugPrint('[login] ⚠️  driverId NOT found in profile response.');
-                debugPrint('[login]     top-level keys: ${profile.keys.toList()}');
-                if (profile.containsKey('driver') &&
-                    profile['driver'] is Map) {
-                  debugPrint('[login]     driver keys: '
-                      '${(profile['driver'] as Map).keys.toList()}');
+                // UserId se try karo
+                final userId = _extract(profile, ['userId', 'id']);
+                if (userId != null && userId.isNotEmpty) {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(_PrefKeys.driverId, userId);
+                  debugPrint('[login]  driverId saved from userId: $userId');
+                  await saveFcmTokenToServer(userId);
                 }
-              }
+               else {
+                debugPrint('[login] ⚠  driverId NOT found in profile response.');
+                debugPrint('[login]     top-level keys: ${profile.keys.toList()}');
+              }}
 
-              final role = _extract(
-                  profile, ['role', 'userType', 'user.role', 'userRole']);
+              final role = _extract(profile, ['role', 'userType', 'user.role', 'userRole']);
               if (role != null) {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString(_PrefKeys.userRole, role.toLowerCase());
@@ -407,12 +408,9 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -432,31 +430,24 @@ class AuthService {
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
   Future<AuthResult> resendVerification() async {
     try {
       final response = await http
-          .post(Uri.parse(ApiConstants.resendVerification),
-              headers: await _authHeaders)
+          .post(Uri.parse(ApiConstants.resendVerification), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 201) {
         return const AuthResult(success: true);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -465,8 +456,8 @@ class AuthService {
       final rt = await getRefreshToken();
       await http
           .post(Uri.parse(ApiConstants.logout),
-              headers: await _authHeaders,
-              body: jsonEncode({'refreshToken': rt ?? ''}))
+          headers: await _authHeaders,
+          body: jsonEncode({'refreshToken': rt ?? ''}))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
     } finally {
@@ -480,34 +471,24 @@ class AuthService {
   Future<AuthResult> getDriverProfile(String driverId) async {
     try {
       final response = await http
-          .get(Uri.parse(ApiConstants.driverById(driverId)),
-              headers: await _authHeaders)
+          .get(Uri.parse(ApiConstants.driverById(driverId)), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('GET DRIVER PROFILE RESPONSE', ApiConstants.driverById(driverId),
           status: response.statusCode, body: response.body);
       final resBody = _safeJsonDecode(response.body);
       if (response.statusCode == 200) {
-        final id = _extract(resBody, [
-          'id',
-          'driverId',
-          'driver_id',
-          'driverProfile.id',
-          'driverProfile.driverId',
-          'data.id',
-        ]);
+        final id = _extract(resBody, ['id', 'driverId', 'driver_id',
+          'driverProfile.id', 'driverProfile.driverId', 'data.id']);
         if (id != null) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_PrefKeys.driverId, id);
-          debugPrint('[getDriverProfile] ✅ driverId saved: $id');
+          debugPrint('[getDriverProfile] driverId saved: $id');
         }
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -524,12 +505,9 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return AuthResult(success: true, data: resBody);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(resBody, response.statusCode));
+      return AuthResult(success: false, message: _errorMessage(resBody, response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -544,32 +522,27 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'latitude':        latitude,
-        'longitude':       longitude,
-        'accuracyMeters':  accuracyMeters ?? 0,
-        'speedKmh':        speedKmh ?? 0,
-        'headingDegrees':  headingDegrees ?? 0,
+        'latitude': latitude, 'longitude': longitude,
+        'accuracyMeters': accuracyMeters ?? 0,
+        'speedKmh': speedKmh ?? 0,
+        'headingDegrees': headingDegrees ?? 0,
         'isActiveDelivery': isActiveDelivery,
       };
       final response = await http
           .post(Uri.parse(ApiConstants.driverLocation(driverId)),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const AuthResult(success: true);
       }
-      return AuthResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return AuthResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return AuthResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return AuthResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  Future<ApiResult<Map<String, dynamic>>> getDriverStats(
-      String driverId) async {
+  Future<ApiResult<Map<String, dynamic>>> getDriverStats(String driverId) async {
     try {
       final url = ApiConstants.driverStats(driverId);
       _log('GET DRIVER STATS REQUEST', url);
@@ -581,13 +554,34 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  //  Save FCM Token to server
+  Future<void> saveFcmTokenToServer(String driverId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final fcmToken = prefs.getString(_PrefKeys.fcmToken);
+      if (fcmToken == null) return;
+
+      final url = ApiConstants.saveFcmToken(driverId);
+      final response = await http.post(
+        Uri.parse(url),
+        headers: await _authHeaders,
+        body: jsonEncode({'fcmToken': fcmToken}),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        debugPrint(' FCM Token saved to server!');
+      } else {
+        debugPrint(' FCM Token save failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint(' FCM Token save error: $e');
     }
   }
 
@@ -605,13 +599,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -623,13 +614,10 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -640,28 +628,24 @@ class AuthService {
   }) async {
     try {
       final body = {
-        'productId':           productId,
-        'quantity':            quantity,
+        'productId': productId, 'quantity': quantity,
         'specialInstructions': specialInstructions ?? '',
       };
       _log('ADD CART ITEM REQUEST', ApiConstants.cartItems,
           extra: 'productId: $productId | qty: $quantity');
       final response = await http
           .post(Uri.parse(ApiConstants.cartItems),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('ADD CART ITEM RESPONSE', ApiConstants.cartItems,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -673,23 +657,19 @@ class AuthService {
     try {
       final url  = ApiConstants.cartItem(cartItemId);
       final body = {
-        'quantity':            quantity,
+        'quantity': quantity,
         'specialInstructions': specialInstructions ?? '',
       };
       final response = await http
-          .put(Uri.parse(url),
-              headers: await _authHeaders, body: jsonEncode(body))
+          .put(Uri.parse(url), headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200 || response.statusCode == 204) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -702,13 +682,10 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -732,29 +709,23 @@ class AuthService {
           extra: 'deliveryAddressId: $deliveryAddressId');
       final response = await http
           .post(Uri.parse(ApiConstants.ordersCheckout),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CHECKOUT RESPONSE', ApiConstants.ordersCheckout,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
   Future<ApiResult<Map<String, dynamic>>> getMyOrders({
-    int? status,
-    String? dateFrom,
-    String? dateTo,
-    int page     = 1,
-    int pageSize = 10,
+    int? status, String? dateFrom, String? dateTo,
+    int page = 1, int pageSize = 10,
   }) async {
     try {
       final params = {
@@ -763,8 +734,7 @@ class AuthService {
         if (dateFrom != null) 'dateFrom': dateFrom,
         if (dateTo   != null) 'dateTo':   dateTo,
       };
-      final uri =
-          Uri.parse(ApiConstants.myOrders).replace(queryParameters: params);
+      final uri = Uri.parse(ApiConstants.myOrders).replace(queryParameters: params);
       _log('GET MY ORDERS REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -774,18 +744,14 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  Future<ApiResult<Map<String, dynamic>>> getMyOrderById(
-      String orderId) async {
+  Future<ApiResult<Map<String, dynamic>>> getMyOrderById(String orderId) async {
     try {
       final url = ApiConstants.myOrderById(orderId);
       _log('GET ORDER DETAIL REQUEST', url);
@@ -797,13 +763,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -816,21 +779,18 @@ class AuthService {
       _log('CANCEL ORDER REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-              headers: await _authHeaders,
-              body: jsonEncode({'reason': reason}))
+          headers: await _authHeaders,
+          body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('CANCEL ORDER RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -838,22 +798,17 @@ class AuthService {
     try {
       _log('GET MY ORDERS ANALYTICS REQUEST', ApiConstants.myOrdersAnalytics);
       final response = await http
-          .get(Uri.parse(ApiConstants.myOrdersAnalytics),
-              headers: await _authHeaders)
+          .get(Uri.parse(ApiConstants.myOrdersAnalytics), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-      _log('GET MY ORDERS ANALYTICS RESPONSE',
-          ApiConstants.myOrdersAnalytics,
+      _log('GET MY ORDERS ANALYTICS RESPONSE', ApiConstants.myOrdersAnalytics,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -861,11 +816,8 @@ class AuthService {
   //  ORDERS — SUPPLIER
   // ══════════════════════════════════════════════════════
   Future<ApiResult<Map<String, dynamic>>> getSupplierOrders({
-    int? status,
-    String? dateFrom,
-    String? dateTo,
-    int page     = 1,
-    int pageSize = 10,
+    int? status, String? dateFrom, String? dateTo,
+    int page = 1, int pageSize = 10,
   }) async {
     try {
       final params = {
@@ -874,8 +826,7 @@ class AuthService {
         if (dateFrom != null) 'dateFrom': dateFrom,
         if (dateTo   != null) 'dateTo':   dateTo,
       };
-      final uri = Uri.parse(ApiConstants.supplierOrders)
-          .replace(queryParameters: params);
+      final uri = Uri.parse(ApiConstants.supplierOrders).replace(queryParameters: params);
       _log('GET SUPPLIER ORDERS REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -885,18 +836,14 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  Future<ApiResult<Map<String, dynamic>>> getSupplierOrderById(
-      String orderId) async {
+  Future<ApiResult<Map<String, dynamic>>> getSupplierOrderById(String orderId) async {
     try {
       final url = ApiConstants.supplierOrderById(orderId);
       _log('GET SUPPLIER ORDER DETAIL REQUEST', url);
@@ -908,13 +855,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -924,33 +868,27 @@ class AuthService {
     required int    status,
   }) async {
     try {
-      final url =
-          ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
-      _log('UPDATE ORDER ITEM STATUS REQUEST', url,
-          extra: 'status: $status');
+      final url = ApiConstants.supplierOrderItemStatus(orderId, orderItemId);
+      _log('UPDATE ORDER ITEM STATUS REQUEST', url, extra: 'status: $status');
       final response = await http
           .patch(Uri.parse(url),
-              headers: await _authHeaders,
-              body: jsonEncode({'status': status}))
+          headers: await _authHeaders,
+          body: jsonEncode({'status': status}))
           .timeout(const Duration(seconds: 30));
       _log('UPDATE ORDER ITEM STATUS RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
   Future<ApiResult<Map<String, dynamic>>> getSupplierOrdersAnalytics({
-    String? dateFrom,
-    String? dateTo,
+    String? dateFrom, String? dateTo,
   }) async {
     try {
       final params = <String, String>{
@@ -968,13 +906,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -982,16 +917,14 @@ class AuthService {
   //  CATEGORIES
   // ══════════════════════════════════════════════════════
   Future<ApiResult<List<dynamic>>> getCategories({
-    bool includeInactive = false,
-    int? parentId,
+    bool includeInactive = false, int? parentId,
   }) async {
     try {
       final params = {
         'includeInactive': includeInactive.toString(),
         if (parentId != null) 'parentId': parentId.toString(),
       };
-      final uri = Uri.parse(ApiConstants.categories)
-          .replace(queryParameters: params);
+      final uri = Uri.parse(ApiConstants.categories).replace(queryParameters: params);
       _log('GET CATEGORIES REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -1002,19 +935,15 @@ class AuthService {
         final decoded = _safeJsonDecodeAny(response.body);
         if (decoded is List) return ApiResult(success: true, data: decoded);
         if (decoded is Map<String, dynamic>) {
-          final list =
-              decoded['data'] ?? decoded['items'] ?? decoded['categories'];
+          final list = decoded['data'] ?? decoded['items'] ?? decoded['categories'];
           if (list is List) return ApiResult(success: true, data: list);
         }
         return const ApiResult(success: true, data: []);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1027,13 +956,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1052,19 +978,15 @@ class AuthService {
         final decoded = _safeJsonDecodeAny(response.body);
         if (decoded is List) return ApiResult(success: true, data: decoded);
         if (decoded is Map<String, dynamic>) {
-          final list =
-              decoded['data'] ?? decoded['items'] ?? decoded['addresses'];
+          final list = decoded['data'] ?? decoded['items'] ?? decoded['addresses'];
           if (list is List) return ApiResult(success: true, data: list);
         }
         return const ApiResult(success: true, data: []);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1092,20 +1014,17 @@ class AuthService {
       _log('CREATE ADDRESS REQUEST', ApiConstants.addresses);
       final response = await http
           .post(Uri.parse(ApiConstants.addresses),
-              headers: await _authHeaders, body: jsonEncode(body))
+          headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('CREATE ADDRESS RESPONSE', ApiConstants.addresses,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1134,21 +1053,17 @@ class AuthService {
       };
       _log('UPDATE ADDRESS REQUEST', url);
       final response = await http
-          .put(Uri.parse(url),
-              headers: await _authHeaders, body: jsonEncode(body))
+          .put(Uri.parse(url), headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
       _log('UPDATE ADDRESS RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 204) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1164,13 +1079,10 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1186,13 +1098,10 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 204) {
         return const ApiResult(success: true);
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1200,14 +1109,10 @@ class AuthService {
   //  CATALOG
   // ══════════════════════════════════════════════════════
   Future<ApiResult<Map<String, dynamic>>> getCatalogProducts({
-    String? search,
-    int?    categoryId,
-    double? minPrice,
-    double? maxPrice,
-    double? minRating,
-    String? supplierId,
-    int     page     = 1,
-    int     pageSize = 10,
+    String? search, int? categoryId,
+    double? minPrice, double? maxPrice,
+    double? minRating, String? supplierId,
+    int page = 1, int pageSize = 10,
   }) async {
     try {
       final params = <String, String>{
@@ -1219,8 +1124,7 @@ class AuthService {
         if (minRating  != null) 'minRating':  minRating.toString(),
         if (supplierId != null && supplierId.isNotEmpty) 'supplierId': supplierId,
       };
-      final uri = Uri.parse(ApiConstants.catalogProducts)
-          .replace(queryParameters: params);
+      final uri = Uri.parse(ApiConstants.catalogProducts).replace(queryParameters: params);
       _log('GET CATALOG PRODUCTS REQUEST', uri.toString());
       final response = await http
           .get(uri, headers: await _authHeaders)
@@ -1230,28 +1134,21 @@ class AuthService {
       if (response.statusCode == 200) {
         final decoded = _safeJsonDecodeAny(response.body);
         if (decoded is List) {
-          return ApiResult(
-              success: true,
-              data: {'items': decoded, 'total': decoded.length});
+          return ApiResult(success: true, data: {'items': decoded, 'total': decoded.length});
         }
         if (decoded is Map<String, dynamic>) {
           return ApiResult(success: true, data: decoded);
         }
-        return const ApiResult(
-            success: true, data: {'items': [], 'total': 0});
+        return const ApiResult(success: true, data: {'items': [], 'total': 0});
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
-  Future<ApiResult<Map<String, dynamic>>> getCatalogProductById(
-      String id) async {
+  Future<ApiResult<Map<String, dynamic>>> getCatalogProductById(String id) async {
     try {
       final url = ApiConstants.catalogProductById(id);
       _log('GET CATALOG PRODUCT BY ID REQUEST', url);
@@ -1263,13 +1160,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1277,79 +1171,48 @@ class AuthService {
     try {
       _log('GET CATALOG FILTERS REQUEST', ApiConstants.catalogFilters);
       final response = await http
-          .get(Uri.parse(ApiConstants.catalogFilters),
-              headers: await _authHeaders)
+          .get(Uri.parse(ApiConstants.catalogFilters), headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
       _log('GET CATALOG FILTERS RESPONSE', ApiConstants.catalogFilters,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
   // ══════════════════════════════════════════════════════
-  //  DELIVERIES (Driver)
-  //
-  //  FIX: The old implementation used a three-attempt fallback that
-  //  always ignored the status parameter and fetched everything.
-  //  The API actually returns ALL deliveries regardless of the status
-  //  query param (confirmed by the logs showing 29 records with mixed
-  //  statuses). So we now make ONE clean request with no params and
-  //  return the full list. All status filtering is done client-side
-  //  in AvailableJobsScreen and ActiveDeliveryScreen, where we have
-  //  full context (driverId, desired status strings, etc).
+  //  DELIVERIES
   // ══════════════════════════════════════════════════════
   Future<ApiResult<List<dynamic>>> getDeliveries({int status = 2}) async {
     try {
-      // The API ignores the status query param and returns everything —
-      // confirmed by real response logs. We make one clean request.
       final uri = Uri.parse(ApiConstants.deliveries);
       _log('GET DELIVERIES REQUEST', uri.toString(),
           extra: 'note: API returns all statuses; filtering done client-side');
-
       final response = await http
           .get(uri, headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-
       _log('GET DELIVERIES RESPONSE', uri.toString(),
           status: response.statusCode, body: response.body);
-
       if (response.statusCode == 200) {
         return _parseDeliveriesList(response.body);
       }
-
-      // If the no-param request fails for any reason, try with status param
-      // as a fallback — some API versions may support it.
-      _log('GET DELIVERIES RETRY (status param)', uri.toString(),
-          extra: 'status=$status');
       final uriWithStatus = Uri.parse(ApiConstants.deliveries)
           .replace(queryParameters: {'status': status.toString()});
       final retryResponse = await http
           .get(uriWithStatus, headers: await _authHeaders)
           .timeout(const Duration(seconds: 30));
-
-      _log('GET DELIVERIES RETRY RESPONSE', uriWithStatus.toString(),
-          status: retryResponse.statusCode, body: retryResponse.body);
-
       if (retryResponse.statusCode == 200) {
         return _parseDeliveriesList(retryResponse.body);
       }
-
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(retryResponse.body), retryResponse.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(retryResponse.body), retryResponse.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1357,10 +1220,8 @@ class AuthService {
     final decoded = _safeJsonDecodeAny(body);
     if (decoded is List) return ApiResult(success: true, data: decoded);
     if (decoded is Map<String, dynamic>) {
-      final list = decoded['data'] ??
-          decoded['items'] ??
-          decoded['deliveries'] ??
-          decoded['results'];
+      final list = decoded['data'] ?? decoded['items'] ??
+          decoded['deliveries'] ?? decoded['results'];
       if (list is List) return ApiResult(success: true, data: list);
     }
     return const ApiResult(success: true, data: []);
@@ -1381,13 +1242,10 @@ class AuthService {
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1401,21 +1259,18 @@ class AuthService {
       _log('REJECT DELIVERY REQUEST', url, extra: 'reason: $reason');
       final response = await http
           .post(Uri.parse(url),
-              headers: await _authHeaders,
-              body: jsonEncode({'reason': reason}))
+          headers: await _authHeaders,
+          body: jsonEncode({'reason': reason}))
           .timeout(const Duration(seconds: 30));
       _log('REJECT DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1436,30 +1291,22 @@ class AuthService {
         request.headers['Authorization'] = 'Bearer $token';
         request.headers['Accept'] = 'application/json';
       }
-      if (notes != null && notes.isNotEmpty) {
-        request.fields['notes'] = notes;
-      }
+      if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-          'photo', photoBytes,
-          filename: photoFileName ?? 'pickup_photo.jpg',
-        ));
+            'photo', photoBytes, filename: photoFileName ?? 'pickup_photo.jpg'));
       }
-      final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('CONFIRM PICKUP RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1475,8 +1322,7 @@ class AuthService {
   }) async {
     try {
       final url = ApiConstants.completeDelivery(driverId, deliveryId);
-      _log('COMPLETE DELIVERY REQUEST', url,
-          extra: 'recipientName: $recipientName');
+      _log('COMPLETE DELIVERY REQUEST', url, extra: 'recipientName: $recipientName');
       final request = http.MultipartRequest('POST', Uri.parse(url));
       final token = await getAccessToken();
       if (token != null) {
@@ -1484,36 +1330,26 @@ class AuthService {
         request.headers['Accept'] = 'application/json';
       }
       request.fields['recipientName'] = recipientName;
-      if (notes != null && notes.isNotEmpty) {
-        request.fields['notes'] = notes;
-      }
+      if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-          'photo', photoBytes,
-          filename: photoFileName ?? 'delivery_photo.jpg',
-        ));
+            'photo', photoBytes, filename: photoFileName ?? 'delivery_photo.jpg'));
       }
       if (signatureBytes != null && signatureBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-          'signature', signatureBytes,
-          filename: signatureFileName ?? 'signature.png',
-        ));
+            'signature', signatureBytes, filename: signatureFileName ?? 'signature.png'));
       }
-      final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamed);
       _log('COMPLETE DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1521,8 +1357,7 @@ class AuthService {
   //  EARNINGS
   // ══════════════════════════════════════════════════════
   Future<ApiResult<Map<String, dynamic>>> getEarningsSummary({
-    required String driverId,
-    String period = 'week',
+    required String driverId, String period = 'week',
   }) async {
     try {
       final uri = Uri.parse(ApiConstants.earningsSummary(driverId))
@@ -1537,13 +1372,10 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
@@ -1554,8 +1386,7 @@ class AuthService {
   }) async {
     try {
       final uri = Uri.parse(ApiConstants.earningsByDateRange(driverId))
-          .replace(
-              queryParameters: {'fromDate': fromDate, 'toDate': toDate});
+          .replace(queryParameters: {'fromDate': fromDate, 'toDate': toDate});
       _log('GET EARNINGS BY DATE RANGE REQUEST', uri.toString(),
           extra: 'driverId: $driverId | from: $fromDate | to: $toDate');
       final response = await http
@@ -1566,17 +1397,14 @@ class AuthService {
       if (response.statusCode == 200) {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
-      return ApiResult(
-          success: false,
-          message: _errorMessage(
-              _safeJsonDecode(response.body), response.statusCode));
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
-      return ApiResult(
-          success: false, message: _friendlyNetworkError(e.toString()));
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
-  Future<ApiResult<Map<String, dynamic>>> getDeliveryByOrderId(
-      String orderId) async {
+
+  Future<ApiResult<Map<String, dynamic>>> getDeliveryByOrderId(String orderId) async {
     try {
       final url = '${ApiConstants.baseUrl}/api/Deliveries/order/$orderId';
       final response = await http

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "604556663164",
+    "project_id": "quickapp-1bc74",
+    "storage_bucket": "quickapp-1bc74.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:604556663164:android:5b493e4fc1351db5b96cf9",
+        "android_client_info": {
+          "package_name": "com.example.food_delivery_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC8WBphOzl-hTy_tK9LFA1fEAQQsF1jIl0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

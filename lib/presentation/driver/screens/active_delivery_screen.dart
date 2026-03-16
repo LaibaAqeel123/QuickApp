@@ -148,7 +148,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           .build();
 
       await _hubConnection!.start();
-      debugPrint('✅ Driver SignalR connected!');
+      debugPrint(' Driver SignalR connected!');
 
       // Send location every 15 seconds
       _locationTimer = Timer.periodic(
@@ -159,7 +159,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       // Send immediately
       await _sendLocation();
     } catch (e) {
-      debugPrint('❌ Driver SignalR error: $e');
+      debugPrint(' Driver SignalR error: $e');
     }
   }
 
@@ -189,10 +189,10 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           position.speed * 3.6,
           position.heading,
         ]);
-        debugPrint('📍 Location sent: ${position.latitude}, ${position.longitude}');
+        debugPrint(' Location sent: ${position.latitude}, ${position.longitude}');
       }
     } catch (e) {
-      debugPrint('❌ Location send error: $e');
+      debugPrint(' Location send error: $e');
     }
   }
 
