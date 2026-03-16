@@ -42,6 +42,9 @@ jobs:
           APP_DIR="${{ steps.app.outputs.app_dir }}"
           echo "VITE_API_URL=https://api.neptasolutions.co.uk/api/v1" > "$APP_DIR/.env.production"
           echo "VITE_APP_NAME=QuickApp Admin" >> "$APP_DIR/.env.production"
+          if [ -n "${VITE_SIGNALR_URL:-}" ]; then
+            echo "VITE_SIGNALR_URL=${VITE_SIGNALR_URL}" >> "$APP_DIR/.env.production"
+          fi
           cat "$APP_DIR/.env.production"
 
       - name: Setup Node.js

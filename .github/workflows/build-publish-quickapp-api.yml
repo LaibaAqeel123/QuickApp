@@ -54,6 +54,11 @@ jobs:
             --configuration Release \
             --output ${{ env.PUBLISH_OUTPUT }}
 
+      - name: Exclude wwwroot and Uploads from deploy (never overwrite server uploads)
+        run: |
+          rm -rf ${{ env.PUBLISH_OUTPUT }}/wwwroot ${{ env.PUBLISH_OUTPUT }}/Uploads
+          echo "wwwroot and Uploads excluded - server folders will not be overwritten"
+
       - name: List publish output
         run: |
           ls -la ${{ env.PUBLISH_OUTPUT }}/
@@ -78,6 +83,13 @@ jobs:
           name: QuickApp.Api-publish
           path: deploy-api
 
+      - name: Add Firebase service account file to deploy package
+        if: ${{ secrets.FIREBASE_ADMIN_JSON_BASE64 != '' }}
+        run: |
+          mkdir -p deploy-api
+          echo "${{ secrets.FIREBASE_ADMIN_JSON_BASE64 }}" | base64 -d > deploy-api/quickapp-1bc74-firebase-adminsdk-fbsvc-ac8452d202.json
+          echo "Firebase service account JSON written to deploy-api/quickapp-1bc74-firebase-adminsdk-fbsvc-ac8452d202.json"
+
       - name: Stop IIS before deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -100,7 +112,7 @@ jobs:
           target: "${{ env.API_TARGET_PATH }}"
           strip_components: 1
           tar_dereference: true
-          overwrite: true
+          overwrite: false
 
       - name: Start IIS
         uses: appleboy/ssh-action@v1.0.3
@@ -111,4 +123,4 @@ jobs:
           port: 22
           script_stderr: true
           script: |
-            powershell.exe -Command "Import-Module WebAdministration; Start-WebAppPool -Name 'ApiAppPool'; Start-Sleep -Seconds 2; Start-WebSite -Name '${{ env.SITE_NAME }}'"
+            powershell.exe -Command "Import-Module WebAdministration; $pool = (Get-Item \"IIS:\\Sites\\${{ env.SITE_NAME }}\").applicationPool; Start-WebAppPool -Name $pool; Start-Sleep -Seconds 2; Start-WebSite -Name '${{ env.SITE_NAME }}'"

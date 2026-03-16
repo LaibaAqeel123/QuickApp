@@ -155,7 +155,7 @@ Use the numbers as `EPIC/STORY/TASK` references.
 3.3.2.4 TASK: Implement daily reconciliation job (summary per day)  
 3.3.2.5 TASK: Add alerts for failed payments
 
----
+---  
 
 ### 4. Sprint 3 – Delivery, Drivers & Tracking
 
