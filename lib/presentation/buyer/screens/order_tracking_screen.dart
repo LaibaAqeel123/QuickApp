@@ -4,7 +4,6 @@ import 'package:latlong2/latlong.dart';
 import 'package:signalr_netcore/signalr_client.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
-import 'package:signalr_netcore/signalr_client.dart';
 import 'package:signalr_netcore/http_connection_options.dart';
 import 'package:signalr_netcore/itransport.dart';
 
@@ -46,15 +45,16 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   String get _orderId =>
       (_src['id'] ?? _src['orderId'] ?? _src['orderNumber'] ?? '').toString();
 
-  String get _deliveryId =>
-      (_src['deliveryId'] ?? '').toString();
+  String get _deliveryId => (_src['deliveryId'] ?? '').toString();
 
   String _fmtDate(dynamic raw) {
     if (raw == null) return '';
     try {
       final dt = DateTime.parse(raw.toString()).toLocal();
       return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-    } catch (_) { return raw.toString(); }
+    } catch (_) {
+      return raw.toString();
+    }
   }
 
   String _fmtTime(dynamic raw) {
@@ -64,23 +64,30 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       final h = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
       final m = dt.minute.toString().padLeft(2, '0');
       return '$h:$m ${dt.hour >= 12 ? 'PM' : 'AM'}';
-    } catch (_) { return raw.toString(); }
+    } catch (_) {
+      return raw.toString();
+    }
   }
 
   String get _statusLabel {
     final raw = _src['status'] ?? _src['orderStatus'];
     if (raw is String) return raw;
     if (raw is int) switch (raw) {
-      case 1: return 'Processing';
-      case 2: return 'Out for Delivery';
-      case 3: return 'Delivered';
-      case 4: return 'Cancelled';
+      case 1:
+        return 'Processing';
+      case 2:
+        return 'Out for Delivery';
+      case 3:
+        return 'Delivered';
+      case 4:
+        return 'Cancelled';
     }
     return 'Processing';
   }
 
   String get _supplierName =>
-      (_src['supplierName'] ?? _src['supplier']?['name'] ?? 'Supplier').toString();
+      (_src['supplierName'] ?? _src['supplier']?['name'] ?? 'Supplier')
+          .toString();
 
   int get _itemCount {
     final items = _src['items'] ?? _src['orderItems'];
@@ -90,7 +97,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 
   double get _total =>
-      ((_src['total'] ?? _src['totalAmount'] ?? _src['grandTotal'] ?? 0) as num).toDouble();
+      ((_src['total'] ?? _src['totalAmount'] ?? _src['grandTotal'] ?? 0) as num)
+          .toDouble();
 
   Map<String, dynamic>? get _driver =>
       _src['driver'] as Map<String, dynamic>?;
@@ -102,28 +110,27 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     return cur >= m && cur != -1;
   }
 
-  Color _statusColor() {
-    switch (_statusLabel.toLowerCase()) {
-      case 'processing': return AppColors.warning;
-      case 'out for delivery': return AppColors.info;
-      case 'delivered': return AppColors.success;
-      case 'cancelled': return AppColors.error;
-      default: return AppColors.textSecondary;
-    }
-  }
-
   Future<void> _load() async {
     if (_orderId.isEmpty) {
-      setState(() { _isLoading = false; _error = 'Invalid order ID.'; });
+      setState(() {
+        _isLoading = false;
+        _error = 'Invalid order ID.';
+      });
       return;
     }
-    setState(() { _isLoading = true; _error = null; });
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
 
     final r = await AuthService.instance.getMyOrderById(_orderId);
     if (!mounted) return;
 
     if (r.success && r.data != null) {
-      setState(() { _detail = r.data; _isLoading = false; });
+      setState(() {
+        _detail = r.data;
+        _isLoading = false;
+      });
 
       // Set delivery location from address
       final addr = _detail?['deliveryAddress'];
@@ -135,28 +142,34 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         }
       }
 
-      // Get deliveryId from separate API
-      final deliveryResult = await AuthService.instance
-          .getDeliveryByOrderId(_orderId);
-      debugPrint(' DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
+      // Get deliveryId from API
+      final deliveryResult =
+      await AuthService.instance.getDeliveryByOrderId(_orderId);
+      debugPrint(
+          '🚚 DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
 
       if (deliveryResult.success && deliveryResult.data != null) {
-        final dId = deliveryResult.data!['deliveryId']?.toString() ?? '';
-        debugPrint(' DeliveryId found: $dId');
+        final dId =
+            deliveryResult.data!['deliveryId']?.toString() ?? '';
+        debugPrint('🚚 DeliveryId found: $dId');
         if (dId.isNotEmpty) {
           setState(() => _detail = {...?_detail, 'deliveryId': dId});
           await _connectSignalR();
         }
       }
     } else {
-      setState(() { _isLoading = false; _error = r.message; });
+      setState(() {
+        _isLoading = false;
+        _error = r.message;
+      });
     }
   }
+
   Future<void> _connectSignalR() async {
     debugPrint('🔌 SignalR connecting... deliveryId: $_deliveryId');
     try {
       final token = await AuthService.instance.getAccessToken();
-      debugPrint(' Token: ${token != null ? "EXISTS" : "NULL"}');
+      debugPrint('🔑 Token: ${token != null ? "EXISTS" : "NULL"}');
       if (token == null) return;
 
       final hubUrl =
@@ -166,7 +179,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           .withUrl(
         hubUrl,
         options: HttpConnectionOptions(
-          transport: HttpTransportType.LongPolling,
+          transport: HttpTransportType.WebSockets,
           skipNegotiation: true,
         ),
       )
@@ -177,7 +190,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       _hubConnection!.keepAliveIntervalInMilliseconds = 15000;
 
       _hubConnection!.on('LocationUpdated', (args) {
-        debugPrint(' LocationUpdated received: $args');
+        debugPrint('📍 LocationUpdated received: $args');
         if (args == null || args.isEmpty) return;
         try {
           final data = args[0] as Map<String, dynamic>;
@@ -189,16 +202,35 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
               _driverLocation = LatLng(lat, lng);
               _etaMinutes = eta;
             });
-            try { _mapController.move(_driverLocation!, 15); } catch (_) {}
+            try {
+              _mapController.move(_driverLocation!, 15);
+            } catch (_) {}
           }
         } catch (e) {
-          debugPrint(' Parse error: $e');
+          debugPrint('❌ Parse error: $e');
         }
       });
 
-      debugPrint('🔌 Starting...');
+      _hubConnection!.onclose(({error}) {
+        debugPrint('🔌 SignalR closed: $error');
+        if (mounted) setState(() => _isConnected = false);
+      });
+
+      _hubConnection!.onreconnecting(({error}) {
+        debugPrint('🔄 SignalR reconnecting: $error');
+        if (mounted) setState(() => _isConnected = false);
+      });
+
+      _hubConnection!.onreconnected(({connectionId}) {
+        debugPrint('✅ SignalR reconnected: $connectionId');
+        if (mounted) setState(() => _isConnected = true);
+        // Re-subscribe after reconnect
+        _hubConnection!.invoke('SubscribeToDelivery', args: [_deliveryId]);
+      });
+
+      debugPrint('🔌 Starting SignalR...');
       await _hubConnection!.start();
-      debugPrint(' SignalR connected!');
+      debugPrint('✅ SignalR connected!');
 
       if (mounted) setState(() => _isConnected = true);
 
@@ -206,13 +238,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         'SubscribeToDelivery',
         args: [_deliveryId],
       );
-      debugPrint(' Subscribed: $_deliveryId');
-
+      debugPrint('✅ Subscribed to: $_deliveryId');
     } catch (e) {
-      debugPrint(' SignalR error: $e');
+      debugPrint('❌ SignalR error: $e');
+      if (mounted) setState(() => _isConnected = false);
       _hubConnection = null;
     }
   }
+
   LatLng get _mapCenter {
     if (_driverLocation != null) return _driverLocation!;
     if (_deliveryLocation != null) return _deliveryLocation!;
@@ -249,7 +282,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-
               if (_error != null)
                 Container(
                   margin: const EdgeInsets.all(16),
@@ -263,9 +295,11 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                     const Icon(Icons.warning_amber_rounded,
                         color: AppColors.error, size: 20),
                     const SizedBox(width: 8),
-                    Expanded(child: Text(_error!,
-                        style: const TextStyle(
-                            fontSize: 13, color: AppColors.error))),
+                    Expanded(
+                        child: Text(_error!,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: AppColors.error))),
                   ]),
                 ),
 
@@ -293,6 +327,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                   ]),
                 ),
 
+              // ── MAP — hamesha dikhega ──────────────────────
               Container(
                 height: 280,
                 margin: const EdgeInsets.all(16),
@@ -302,91 +337,146 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(16),
-                  child: _driverLocation == null
-                      ? Container(
-                    color: AppColors.surfaceLight,
-                    child: const Center(
-                      child: Column(
-                        mainAxisAlignment:
-                        MainAxisAlignment.center,
+                  child: Stack(
+                    children: [
+                      FlutterMap(
+                        mapController: _mapController,
+                        options: MapOptions(
+                          initialCenter: _mapCenter,
+                          initialZoom: 14,
+                        ),
                         children: [
-                          Icon(Icons.local_shipping,
-                              size: 60,
-                              color: AppColors.primary),
-                          SizedBox(height: 12),
-                          Text(
-                              'Waiting for driver location...',
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  color: AppColors
-                                      .textSecondary)),
+                          TileLayer(
+                            urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            userAgentPackageName:
+                            'com.example.food_delivery_app',
+                          ),
+                          MarkerLayer(markers: [
+                            if (_driverLocation != null)
+                              Marker(
+                                point: _driverLocation!,
+                                width: 50,
+                                height: 50,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white,
+                                        width: 3),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: AppColors.primary
+                                            .withOpacity(0.4),
+                                        blurRadius: 8,
+                                        spreadRadius: 2,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Icon(
+                                    Icons.delivery_dining,
+                                    color: Colors.white,
+                                    size: 26,
+                                  ),
+                                ),
+                              ),
+                            if (_deliveryLocation != null)
+                              Marker(
+                                point: _deliveryLocation!,
+                                width: 50,
+                                height: 50,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: AppColors.success,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white,
+                                        width: 3),
+                                  ),
+                                  child: const Icon(
+                                    Icons.home,
+                                    color: Colors.white,
+                                    size: 26,
+                                  ),
+                                ),
+                              ),
+                          ]),
                         ],
                       ),
-                    ),
-                  )
-                      : FlutterMap(
-                    mapController: _mapController,
-                    options: MapOptions(
-                      initialCenter: _mapCenter,
-                      initialZoom: 14,
-                    ),
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName:
-                        'com.example.food_delivery_app',
-                      ),
-                      MarkerLayer(markers: [
-                        if (_driverLocation != null)
-                          Marker(
-                            point: _driverLocation!,
-                            width: 50,
-                            height: 50,
+                      // Waiting overlay jab driver location nahi hai
+                      if (_driverLocation == null)
+                        Positioned(
+                          bottom: 12,
+                          left: 0,
+                          right: 0,
+                          child: Center(
                             child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
                               decoration: BoxDecoration(
-                                color: AppColors.primary,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                    color: Colors.white,
-                                    width: 3),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: AppColors.primary
-                                        .withOpacity(0.4),
-                                    blurRadius: 8,
-                                    spreadRadius: 2,
+                                color: Colors.black54,
+                                borderRadius:
+                                BorderRadius.circular(20),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Waiting for driver location...',
+                                    style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12),
                                   ),
                                 ],
                               ),
-                              child: const Icon(
-                                Icons.delivery_dining,
-                                color: Colors.white,
-                                size: 26,
-                              ),
                             ),
                           ),
-                        if (_deliveryLocation != null)
-                          Marker(
-                            point: _deliveryLocation!,
-                            width: 50,
-                            height: 50,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: AppColors.success,
-                                shape: BoxShape.circle,
-                                border: Border.all(
+                        ),
+                      // SignalR status badge
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: _isConnected
+                                ? Colors.green.withOpacity(0.85)
+                                : Colors.red.withOpacity(0.85),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _isConnected
+                                    ? Icons.wifi
+                                    : Icons.wifi_off,
+                                color: Colors.white,
+                                size: 12,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _isConnected ? 'Live' : 'Connecting...',
+                                style: const TextStyle(
                                     color: Colors.white,
-                                    width: 3),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold),
                               ),
-                              child: const Icon(
-                                Icons.home,
-                                color: Colors.white,
-                                size: 26,
-                              ),
-                            ),
+                            ],
                           ),
-                      ]),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -421,8 +511,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                         active: false,
                         icon: Icons.verified),
                     _Step(
-                        title: _statusLabel.toLowerCase() ==
-                            'processing'
+                        title: _statusLabel.toLowerCase() == 'processing'
                             ? 'Preparing Order'
                             : 'Order Prepared',
                         subtitle: 'Being prepared by supplier',
@@ -502,11 +591,14 @@ class _DriverCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = (driver?['name'] ?? driver?['fullName'] ?? 'Your Driver').toString();
+    final name =
+    (driver?['name'] ?? driver?['fullName'] ?? 'Your Driver').toString();
     final rating = driver?['rating']?.toString() ?? '—';
     final trips = driver?['totalDeliveries']?.toString() ?? '';
-    final vehicle = (driver?['vehicle'] ?? driver?['vehicleType'] ?? 'Van').toString();
-    final plate = (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
+    final vehicle =
+    (driver?['vehicle'] ?? driver?['vehicleType'] ?? 'Van').toString();
+    final plate =
+    (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -517,28 +609,41 @@ class _DriverCard extends StatelessWidget {
           border: Border.all(color: AppColors.border)),
       child: Row(children: [
         Container(
-            width: 56, height: 56,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(0.1),
                 shape: BoxShape.circle),
-            child: const Icon(Icons.person, size: 30, color: AppColors.primary)),
+            child: const Icon(Icons.person,
+                size: 30, color: AppColors.primary)),
         const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(name,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-              maxLines: 1, overflow: TextOverflow.ellipsis),
-          const SizedBox(height: 4),
-          Row(children: [
-            const Icon(Icons.star, size: 13, color: AppColors.warning),
-            const SizedBox(width: 4),
-            Text(trips.isNotEmpty ? '$rating ($trips deliveries)' : rating,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-          ]),
-          const SizedBox(height: 4),
-          Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
-              style: const TextStyle(fontSize: 11, color: AppColors.textHint)),
-        ])),
+        Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name,
+                      style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 4),
+                  Row(children: [
+                    const Icon(Icons.star, size: 13, color: AppColors.warning),
+                    const SizedBox(width: 4),
+                    Text(
+                        trips.isNotEmpty
+                            ? '$rating ($trips deliveries)'
+                            : rating,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary)),
+                  ]),
+                  const SizedBox(height: 4),
+                  Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
+                      style: const TextStyle(
+                          fontSize: 11, color: AppColors.textHint)),
+                ])),
         IconButton(
             icon: const Icon(Icons.phone, color: AppColors.primary),
             onPressed: () {},
@@ -554,9 +659,13 @@ class _Step extends StatelessWidget {
   final bool completed, active, isLast;
   final IconData icon;
 
-  const _Step({required this.title, required this.subtitle,
-    required this.completed, required this.active,
-    required this.icon, this.isLast = false});
+  const _Step(
+      {required this.title,
+        required this.subtitle,
+        required this.completed,
+        required this.active,
+        required this.icon,
+        this.isLast = false});
 
   @override
   Widget build(BuildContext context) {
@@ -567,28 +676,41 @@ class _Step extends StatelessWidget {
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Column(children: [
         Container(
-            width: 36, height: 36,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
                 color: (completed || active)
-                    ? c.withOpacity(0.1) : AppColors.surfaceLight,
+                    ? c.withOpacity(0.1)
+                    : AppColors.surfaceLight,
                 shape: BoxShape.circle,
                 border: Border.all(color: c, width: 2)),
             child: Icon(icon, size: 18, color: c)),
         if (!isLast)
-          Container(width: 2, height: 50,
+          Container(
+              width: 2,
+              height: 50,
               color: completed ? AppColors.success : AppColors.border),
       ]),
       const SizedBox(width: 12),
-      Expanded(child: Padding(
-          padding: const EdgeInsets.only(bottom: 8, top: 6),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
-                color: (active || completed)
-                    ? AppColors.textPrimary : AppColors.textSecondary)),
-            const SizedBox(height: 3),
-            Text(subtitle, style: const TextStyle(
-                fontSize: 12, color: AppColors.textSecondary)),
-          ]))),
+      Expanded(
+          child: Padding(
+              padding: const EdgeInsets.only(bottom: 8, top: 6),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: (active || completed)
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary)),
+                    const SizedBox(height: 3),
+                    Text(subtitle,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary)),
+                  ]))),
     ]);
   }
 }
@@ -597,17 +719,24 @@ class _DRow extends StatelessWidget {
   final IconData icon;
   final String label, value;
 
-  const _DRow({required this.icon, required this.label, required this.value});
+  const _DRow(
+      {required this.icon, required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) => Row(children: [
     Icon(icon, size: 17, color: AppColors.textSecondary),
     const SizedBox(width: 10),
-    Expanded(child: Text(label,
-        style: const TextStyle(fontSize: 13, color: AppColors.textSecondary))),
-    Flexible(child: Text(value, textAlign: TextAlign.right,
-        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
-            color: AppColors.textPrimary),
-        overflow: TextOverflow.ellipsis)),
+    Expanded(
+        child: Text(label,
+            style: const TextStyle(
+                fontSize: 13, color: AppColors.textSecondary))),
+    Flexible(
+        child: Text(value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary),
+            overflow: TextOverflow.ellipsis)),
   ]);
 }
