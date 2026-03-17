@@ -320,7 +320,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
                     onPressed: () => setBS(() => photoBytes = null),
-                    icon:  const Icon(Icons.close, size: 16),
+                    icon: const Icon(Icons.close, size: 16),
                     label: const Text('Remove'),
                     style: TextButton.styleFrom(foregroundColor: AppColors.error),
                   ),
@@ -432,7 +432,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
               const SizedBox(height: 16),
 
-              // Recipient name (required)
               TextField(
                 controller: recipientCtrl,
                 decoration: InputDecoration(
@@ -447,12 +446,9 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Delivery photo
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Delivery Photo (optional)',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-              ),
+              const Align(alignment: Alignment.centerLeft,
+                  child: Text('Delivery Photo (optional)',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
               const SizedBox(height: 8),
               Row(children: [
                 Expanded(child: OutlinedButton.icon(
@@ -488,7 +484,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
                     onPressed: () => setBS(() => photoBytes = null),
-                    icon:  const Icon(Icons.close, size: 16),
+                    icon: const Icon(Icons.close, size: 16),
                     label: const Text('Remove'),
                     style: TextButton.styleFrom(foregroundColor: AppColors.error),
                   ),
@@ -496,7 +492,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               ],
               const SizedBox(height: 16),
 
-              // Signature section
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Signature (optional)',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
@@ -509,32 +504,23 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
               const SizedBox(height: 8),
 
               if (!showSignaturePad && !signatureCtrl.hasSignature)
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      showSignaturePad = true;
-                      setBS(() {});
-                    },
-                    icon:  const Icon(Icons.draw),
-                    label: const Text('Draw Signature'),
-                  ),
-                ),
+                SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                  onPressed: () { showSignaturePad = true; setBS(() {}); },
+                  icon: const Icon(Icons.draw),
+                  label: const Text('Draw Signature'),
+                )),
 
               if (showSignaturePad) ...[
                 Container(
                   height: 160,
                   decoration: BoxDecoration(
-                    border:       Border.all(color: AppColors.primary, width: 1.5),
+                    border: Border.all(color: AppColors.primary, width: 1.5),
                     borderRadius: BorderRadius.circular(8),
-                    color:        Colors.white,
+                    color: Colors.white,
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: SignaturePad(
-                      controller: signatureCtrl,
-                      onDrawEnd:  () => setBS(() {}),
-                    ),
+                    child: SignaturePad(controller: signatureCtrl, onDrawEnd: () => setBS(() {})),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -548,10 +534,7 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                   ),
                   const SizedBox(width: 8),
                   ElevatedButton(
-                    onPressed: () {
-                      showSignaturePad = false;
-                      setBS(() {});
-                    },
+                    onPressed: () { showSignaturePad = false; setBS(() {}); },
                     child: const Text('Done'),
                   ),
                 ]),
@@ -635,15 +618,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
     setState(() => _isSubmitting = true);
 
-    debugPrint('\n╔══════════════════════════════════════╗');
-    debugPrint('║  COMPLETE DELIVERY — REQUEST');
-    debugPrint('║  driverId     : $_driverId');
-    debugPrint('║  deliveryId   : $deliveryId');
-    debugPrint('║  recipientName: $recipientName');
-    debugPrint('║  hasPhoto     : ${photoBytes != null}');
-    debugPrint('║  hasSignature : ${signatureBytes != null}');
-    debugPrint('╚══════════════════════════════════════╝');
-
     final result = await AuthService.instance.completeDelivery(
       driverId:          _driverId!,
       deliveryId:        deliveryId.toString(),
@@ -655,15 +629,15 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       signatureFileName: 'signature.png',
     );
 
-    debugPrint('\n╔══════════════════════════════════════╗');
-    debugPrint('║  COMPLETE DELIVERY — RESPONSE');
-    debugPrint('║  success: ${result.success} | message: ${result.message}');
-    debugPrint('╚══════════════════════════════════════╝');
+    debugPrint('║  COMPLETE DELIVERY — success: ${result.success} | message: ${result.message}');
+    debugPrint('║  COMPLETE DELIVERY — data: ${result.data}');
 
     if (!mounted) return;
     setState(() => _isSubmitting = false);
 
     if (result.success) {
+     
+
       _locationTimer?.cancel();
       _hubConnection?.stop();
       setState(() => _step = 2);
@@ -676,12 +650,17 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     }
   }
 
+  
+
+  // ── SUCCESS DIALOG ────────────────────────────────────
   void _showSuccessDialog(Map<String, dynamic>? responseData) {
     final earnRaw = responseData?['totalAmount'] ??
         responseData?['driverEarnings'] ??
         _activeDelivery?['driverEarnings'] ??
         _activeDelivery?['payment'];
     final paymentStr = earnRaw != null ? '£${(earnRaw as num).toStringAsFixed(2)}' : '';
+
+    final bool canPop = Navigator.of(context).canPop();
 
     showDialog(
       context: context,
@@ -709,12 +688,21 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: () async {
-                Navigator.pop(ctx);
+                Navigator.of(ctx).pop();
                 final driverId = _driverId ??
                     await AuthService.instance.getSavedDriverId() ?? '';
                 if (!mounted) return;
-                Navigator.pushReplacement(context,
-                    MaterialPageRoute(builder: (_) => EarningsScreen(driverId: driverId)));
+                if (canPop) {
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(
+                        builder: (_) => EarningsScreen(driverId: driverId)),
+                  );
+                } else {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => EarningsScreen(driverId: driverId)),
+                  );
+                }
               },
               child: const Text('View Earnings'),
             ),
@@ -723,7 +711,11 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
           SizedBox(
             width: double.infinity,
             child: TextButton(
-              onPressed: () { Navigator.pop(ctx); Navigator.pop(context); },
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                if (canPop) Navigator.of(context).pop();
+                setState(() { _activeDelivery = null; _step = 0; });
+              },
               child: const Text('Back to Jobs'),
             ),
           ),
@@ -790,7 +782,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             ]))
           : SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-
                 Container(
                   height: 200, color: AppColors.surfaceLight,
                   child: Stack(children: [
@@ -815,7 +806,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                       )),
                   ]),
                 ),
-
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
                   color: _step == 1 ? AppColors.success : AppColors.primary,
@@ -827,7 +817,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     Text(orderNum, style: const TextStyle(fontSize: 13, color: AppColors.white)),
                   ]),
                 ),
-
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   child: Row(children: [
@@ -840,7 +829,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     _StepDot(active: _step >= 2, done: _step >= 2, label: 'Done'),
                   ]),
                 ),
-
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: _DeliveryStep(
@@ -850,7 +838,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     onButtonPressed: _step == 0 ? _showPickupSheet : null,
                   ),
                 ),
-
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   child: _DeliveryStep(
@@ -860,7 +847,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     onButtonPressed: _step == 1 ? _showCompleteSheet : null,
                   ),
                 ),
-
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                   child: Container(
@@ -923,20 +909,17 @@ class SignaturePadController extends ChangeNotifier {
   Future<List<int>> getSignatureBytes() async {
     final strokes = allStrokes;
     if (strokes.isEmpty) return [];
-
     final recorder = ui.PictureRecorder();
     final canvas   = Canvas(recorder);
     const size     = Size(400, 150);
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
         Paint()..color = Colors.white);
-
     final paint = Paint()
       ..color       = Colors.black
       ..strokeWidth  = 2.5
       ..style        = PaintingStyle.stroke
       ..strokeJoin   = StrokeJoin.round
       ..strokeCap    = StrokeCap.round;
-
     for (final stroke in strokes) {
       if (stroke.isEmpty) continue;
       if (stroke.length == 1) {
@@ -948,7 +931,6 @@ class SignaturePadController extends ChangeNotifier {
       for (int i = 1; i < stroke.length; i++) path.lineTo(stroke[i].dx, stroke[i].dy);
       canvas.drawPath(path, paint);
     }
-
     final picture  = recorder.endRecording();
     final img      = await picture.toImage(size.width.toInt(), size.height.toInt());
     final pngBytes = await img.toByteData(format: ui.ImageByteFormat.png);
@@ -956,9 +938,6 @@ class SignaturePadController extends ChangeNotifier {
   }
 }
 
-// ══════════════════════════════════════════════════════════
-//  SIGNATURE PAD WIDGET
-// ══════════════════════════════════════════════════════════
 class SignaturePad extends StatelessWidget {
   final SignaturePadController controller;
   final VoidCallback? onDrawEnd;
@@ -992,7 +971,6 @@ class _SignaturePainter extends CustomPainter {
       ..style        = PaintingStyle.stroke
       ..strokeJoin   = StrokeJoin.round
       ..strokeCap    = StrokeCap.round;
-
     for (final stroke in strokes) {
       if (stroke.isEmpty) continue;
       if (stroke.length == 1) {
