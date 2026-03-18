@@ -585,7 +585,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Hello, $_driverName! 👋',
+                  Text('Hello, $_driverName! ',
                       style: const TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,

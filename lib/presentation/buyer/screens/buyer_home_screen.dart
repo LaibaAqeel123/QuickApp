@@ -149,7 +149,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                     Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      const Text('Welcome back 👋',
+                      const Text('Welcome back ',
                           style: TextStyle(fontSize: 14, color: AppColors.white)),
                       const SizedBox(height: 4),
                       Text(

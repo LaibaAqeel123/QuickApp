@@ -1,6 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:http/http.dart' as http;
 import 'package:signalr_netcore/signalr_client.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
@@ -15,28 +18,44 @@ class OrderTrackingScreen extends StatefulWidget {
   State<OrderTrackingScreen> createState() => _OrderTrackingScreenState();
 }
 
-class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
+class _OrderTrackingScreenState extends State<OrderTrackingScreen>
+    with TickerProviderStateMixin {
   Map<String, dynamic>? _detail;
   bool _isLoading = true;
   String? _error;
+  bool _isFullScreen = false;
 
   final MapController _mapController = MapController();
   LatLng? _driverLocation;
   LatLng? _deliveryLocation;
   double? _etaMinutes;
+  List<LatLng> _routePoints = [];
+  bool _isFetchingRoute = false;
 
   HubConnection? _hubConnection;
   bool _isConnected = false;
 
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
   @override
   void initState() {
     super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.8, end: 1.2).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
     _load();
   }
 
   @override
   void dispose() {
+    _pulseController.dispose();
     _hubConnection?.stop();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -73,21 +92,18 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     final raw = _src['status'] ?? _src['orderStatus'];
     if (raw is String) return raw;
     if (raw is int) switch (raw) {
-      case 1:
-        return 'Processing';
-      case 2:
-        return 'Out for Delivery';
-      case 3:
-        return 'Delivered';
-      case 4:
-        return 'Cancelled';
+      case 1: return 'Processing';
+      case 2: return 'Processing';
+      case 3: return 'Processing';
+      case 4: return 'Out for Delivery';
+      case 5: return 'Delivered';
+      case 6: return 'Delivered';
+      case 7: return 'Cancelled';
     }
     return 'Processing';
   }
-
   String get _supplierName =>
-      (_src['supplierName'] ?? _src['supplier']?['name'] ?? 'Supplier')
-          .toString();
+      (_src['supplierName'] ?? _src['supplier']?['name'] ?? 'Supplier').toString();
 
   int get _itemCount {
     final items = _src['items'] ?? _src['orderItems'];
@@ -100,9 +116,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       ((_src['total'] ?? _src['totalAmount'] ?? _src['grandTotal'] ?? 0) as num)
           .toDouble();
 
-  Map<String, dynamic>? get _driver =>
-      _src['driver'] as Map<String, dynamic>?;
-
   bool _isAtLeast(String min) {
     const order = ['processing', 'out for delivery', 'delivered'];
     final cur = order.indexOf(_statusLabel.toLowerCase());
@@ -110,79 +123,137 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
     return cur >= m && cur != -1;
   }
 
+  // ── ETA Format Helper ────────────────────────────────
+  String _formatEta(double minutes) {
+    if (minutes < 60) {
+      return '${minutes.toStringAsFixed(0)} min';
+    } else {
+      final hours = (minutes / 60).floor();
+      final mins = (minutes % 60).toStringAsFixed(0);
+      return '${hours}h ${mins}min';
+    }
+  }
+
+  // ── OSRM Route Fetch ─────────────────────────────────
+  Future<void> _fetchRoute() async {
+    if (_driverLocation == null || _deliveryLocation == null) return;
+    if (_isFetchingRoute) return;
+    _isFetchingRoute = true;
+
+    try {
+      // Try multiple OSRM servers for reliability
+      final servers = [
+        'https://router.project-osrm.org',
+        'https://routing.openstreetmap.de',
+      ];
+
+      List<LatLng>? points;
+
+      for (final server in servers) {
+        try {
+          final url = '$server/route/v1/driving/'
+              '${_driverLocation!.longitude},${_driverLocation!.latitude};'
+              '${_deliveryLocation!.longitude},${_deliveryLocation!.latitude}'
+              '?overview=full&geometries=geojson';
+
+          final response = await http
+              .get(Uri.parse(url))
+              .timeout(const Duration(seconds: 15));
+
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            if (data['code'] == 'Ok' && data['routes'] != null &&
+                (data['routes'] as List).isNotEmpty) {
+              final coords =
+              data['routes'][0]['geometry']['coordinates'] as List;
+              points = coords
+                  .map((c) => LatLng(
+                (c[1] as num).toDouble(),
+                (c[0] as num).toDouble(),
+              ))
+                  .toList();
+              debugPrint(' Route fetched: ${points.length} points from $server');
+              break;
+            }
+          }
+        } catch (e) {
+          debugPrint(' Server $server failed: $e');
+          continue;
+        }
+      }
+
+      if (mounted) {
+        if (points != null && points.length >= 2) {
+          setState(() => _routePoints = points!);
+        } else {
+          // Fallback — straight line
+          debugPrint('⚠ Using straight line fallback');
+          setState(() => _routePoints = [_driverLocation!, _deliveryLocation!]);
+        }
+      }
+    } catch (e) {
+      debugPrint(' Route fetch error: $e');
+      if (_driverLocation != null && _deliveryLocation != null && mounted) {
+        setState(() => _routePoints = [_driverLocation!, _deliveryLocation!]);
+      }
+    } finally {
+      _isFetchingRoute = false;
+    }
+  }
+
   Future<void> _load() async {
     if (_orderId.isEmpty) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Invalid order ID.';
-      });
+      setState(() { _isLoading = false; _error = 'Invalid order ID.'; });
       return;
     }
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    setState(() { _isLoading = true; _error = null; });
 
     final r = await AuthService.instance.getMyOrderById(_orderId);
     if (!mounted) return;
 
     if (r.success && r.data != null) {
-      setState(() {
-        _detail = r.data;
-        _isLoading = false;
-      });
+      setState(() { _detail = r.data; _isLoading = false; });
 
-      // Set delivery location from address
       final addr = _detail?['deliveryAddress'];
       if (addr != null) {
         final lat = (addr['latitude'] as num?)?.toDouble();
         final lng = (addr['longitude'] as num?)?.toDouble();
         if (lat != null && lng != null) {
           setState(() => _deliveryLocation = LatLng(lat, lng));
+          debugPrint(' Delivery location set: $lat, $lng');
+        } else {
+          debugPrint(' Delivery address has no coordinates: $addr');
         }
       }
 
-      // Get deliveryId from API
       final deliveryResult =
       await AuthService.instance.getDeliveryByOrderId(_orderId);
-      debugPrint(
-          '🚚 DeliveryResult: ${deliveryResult.success} | data: ${deliveryResult.data}');
-
       if (deliveryResult.success && deliveryResult.data != null) {
-        final dId =
-            deliveryResult.data!['deliveryId']?.toString() ?? '';
-        debugPrint('🚚 DeliveryId found: $dId');
+        final dId = deliveryResult.data!['deliveryId']?.toString() ?? '';
         if (dId.isNotEmpty) {
           setState(() => _detail = {...?_detail, 'deliveryId': dId});
           await _connectSignalR();
         }
       }
     } else {
-      setState(() {
-        _isLoading = false;
-        _error = r.message;
-      });
+      setState(() { _isLoading = false; _error = r.message; });
     }
   }
 
   Future<void> _connectSignalR() async {
-    debugPrint('🔌 SignalR connecting... deliveryId: $_deliveryId');
     try {
       final token = await AuthService.instance.getAccessToken();
-      debugPrint('🔑 Token: ${token != null ? "EXISTS" : "NULL"}');
       if (token == null) return;
 
       final hubUrl =
           'https://api.neptasolutions.co.uk/hubs/delivery-tracking?access_token=$token';
 
       _hubConnection = HubConnectionBuilder()
-          .withUrl(
-        hubUrl,
-        options: HttpConnectionOptions(
-          transport: HttpTransportType.WebSockets,
-          skipNegotiation: true,
-        ),
-      )
+          .withUrl(hubUrl,
+          options: HttpConnectionOptions(
+            transport: HttpTransportType.WebSockets,
+            skipNegotiation: true,
+          ))
           .withAutomaticReconnect()
           .build();
 
@@ -190,7 +261,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
       _hubConnection!.keepAliveIntervalInMilliseconds = 15000;
 
       _hubConnection!.on('LocationUpdated', (args) {
-        debugPrint('📍 LocationUpdated received: $args');
         if (args == null || args.isEmpty) return;
         try {
           final data = args[0] as Map<String, dynamic>;
@@ -200,75 +270,371 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
           if (lat != null && lng != null && mounted) {
             setState(() {
               _driverLocation = LatLng(lat, lng);
-              _etaMinutes = eta;
+              // Cap ETA to reasonable value max 600 min = 10 hours
+              if (eta != null && eta > 0 && eta < 600) {
+                _etaMinutes = eta;
+              } else if (eta != null && eta >= 600) {
+                // Calculate manually if too high
+                _etaMinutes = null;
+              }
             });
-            try {
-              _mapController.move(_driverLocation!, 15);
-            } catch (_) {}
+            _fetchRoute();
           }
-        } catch (e) {
-          debugPrint('❌ Parse error: $e');
-        }
+        } catch (_) {}
       });
 
       _hubConnection!.onclose(({error}) {
-        debugPrint('🔌 SignalR closed: $error');
         if (mounted) setState(() => _isConnected = false);
       });
-
       _hubConnection!.onreconnecting(({error}) {
-        debugPrint('🔄 SignalR reconnecting: $error');
         if (mounted) setState(() => _isConnected = false);
       });
-
       _hubConnection!.onreconnected(({connectionId}) {
-        debugPrint('✅ SignalR reconnected: $connectionId');
         if (mounted) setState(() => _isConnected = true);
-        // Re-subscribe after reconnect
         _hubConnection!.invoke('SubscribeToDelivery', args: [_deliveryId]);
       });
 
-      debugPrint('🔌 Starting SignalR...');
       await _hubConnection!.start();
-      debugPrint('✅ SignalR connected!');
-
       if (mounted) setState(() => _isConnected = true);
-
-      await _hubConnection!.invoke(
-        'SubscribeToDelivery',
-        args: [_deliveryId],
-      );
-      debugPrint('✅ Subscribed to: $_deliveryId');
+      await _hubConnection!.invoke('SubscribeToDelivery', args: [_deliveryId]);
     } catch (e) {
-      debugPrint('❌ SignalR error: $e');
       if (mounted) setState(() => _isConnected = false);
       _hubConnection = null;
     }
   }
 
   LatLng get _mapCenter {
+    if (_driverLocation != null && _deliveryLocation != null) {
+      return LatLng(
+        (_driverLocation!.latitude + _deliveryLocation!.latitude) / 2,
+        (_driverLocation!.longitude + _deliveryLocation!.longitude) / 2,
+      );
+    }
     if (_driverLocation != null) return _driverLocation!;
     if (_deliveryLocation != null) return _deliveryLocation!;
     return const LatLng(31.5204, 74.3587);
   }
 
+  double get _mapZoom {
+    if (_driverLocation == null || _deliveryLocation == null) return 14;
+    final latDiff =
+    (_driverLocation!.latitude - _deliveryLocation!.latitude).abs();
+    final lngDiff =
+    (_driverLocation!.longitude - _deliveryLocation!.longitude).abs();
+    final maxDiff = latDiff > lngDiff ? latDiff : lngDiff;
+    if (maxDiff > 5) return 6;
+    if (maxDiff > 2) return 8;
+    if (maxDiff > 1) return 9;
+    if (maxDiff > 0.5) return 11;
+    if (maxDiff > 0.1) return 13;
+    return 14;
+  }
+
+  void _toggleFullScreen() {
+    setState(() => _isFullScreen = !_isFullScreen);
+    if (_isFullScreen) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+  }
+
+  Widget _buildMap({bool fullScreen = false}) {
+    final height =
+    fullScreen ? MediaQuery.of(context).size.height : 300.0;
+
+    return SizedBox(
+      height: height,
+      child: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _mapCenter,
+              initialZoom: _mapZoom,
+            ),
+            children: [
+
+              TileLayer(
+                urlTemplate:
+                'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.food_delivery_app',
+                additionalOptions: const {'s': 'abcd'},
+              ),
+
+
+              if (_routePoints.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _routePoints,
+                      strokeWidth: 6.0,
+                      color: Colors.black.withOpacity(0.12),
+                    ),
+                    Polyline(
+                      points: _routePoints,
+                      strokeWidth: 4.0,
+                      color: AppColors.primary,
+                    ),
+                  ],
+                ),
+
+              // Markers
+              MarkerLayer(markers: [
+                if (_deliveryLocation != null)
+                  Marker(
+                    point: _deliveryLocation!,
+                    width: 60,
+                    height: 70,
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: AppColors.success,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 3),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.success.withOpacity(0.4),
+                                blurRadius: 10,
+                                spreadRadius: 2,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.home,
+                              color: Colors.white, size: 24),
+                        ),
+                        Container(width: 3, height: 10,
+                            color: AppColors.success),
+                      ],
+                    ),
+                  ),
+
+                if (_driverLocation != null)
+                  Marker(
+                    point: _driverLocation!,
+                    width: 70,
+                    height: 70,
+                    child: AnimatedBuilder(
+                      animation: _pulseAnimation,
+                      builder: (context, child) {
+                        return Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(
+                              width: 60 * _pulseAnimation.value,
+                              height: 60 * _pulseAnimation.value,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.primary.withOpacity(
+                                    0.2 / _pulseAnimation.value),
+                              ),
+                            ),
+                            Container(
+                              width: 46,
+                              height: 46,
+                              decoration: BoxDecoration(
+                                color: AppColors.primary,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: Colors.white, width: 3),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.primary.withOpacity(0.5),
+                                    blurRadius: 10,
+                                    spreadRadius: 2,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(Icons.delivery_dining,
+                                  color: Colors.white, size: 24),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+              ]),
+            ],
+          ),
+
+          // Waiting overlay
+          if (_driverLocation == null)
+            Positioned(
+              bottom: 12, left: 0, right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      ),
+                      SizedBox(width: 8),
+                      Text('Waiting for driver location...',
+                          style: TextStyle(
+                              color: Colors.white, fontSize: 12)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          // Live badge
+          Positioned(
+            top: 10, right: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: _isConnected
+                    ? Colors.green.withOpacity(0.9)
+                    : Colors.red.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                      color: Colors.black.withOpacity(0.2), blurRadius: 4),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(_isConnected ? Icons.wifi : Icons.wifi_off,
+                      color: Colors.white, size: 12),
+                  const SizedBox(width: 4),
+                  Text(
+                    _isConnected ? 'Live' : 'Connecting...',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Full screen toggle
+          Positioned(
+            top: 10, left: 10,
+            child: GestureDetector(
+              onTap: _toggleFullScreen,
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.2), blurRadius: 4),
+                  ],
+                ),
+                child: Icon(
+                  fullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                  color: Colors.white, size: 20,
+                ),
+              ),
+            ),
+          ),
+
+          // Driver → Destination bar
+          if (_driverLocation != null && _deliveryLocation != null)
+            Positioned(
+              bottom: 12, left: 12, right: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.95),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Colors.black.withOpacity(0.1), blurRadius: 8),
+                  ],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    Row(children: [
+                      Container(
+                        width: 10, height: 10,
+                        decoration: BoxDecoration(
+                            color: AppColors.primary,
+                            shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text('Driver',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87)),
+                    ]),
+                    Container(
+                      width: 40, height: 2,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [AppColors.primary, AppColors.success],
+                        ),
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                    Row(children: [
+                      Container(
+                        width: 10, height: 10,
+                        decoration: BoxDecoration(
+                            color: AppColors.success,
+                            shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text('Destination',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87)),
+                    ]),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isFullScreen) {
+      return Scaffold(
+        body: GestureDetector(
+          onTap: _toggleFullScreen,
+          child: _buildMap(fullScreen: true),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: Text('Order $_orderId', overflow: TextOverflow.ellipsis),
+        title: const Text('Track Order'),
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation: 0,
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: Icon(
-              Icons.circle,
-              size: 12,
-              color: _isConnected ? Colors.greenAccent : Colors.grey,
-            ),
+            child: Icon(Icons.circle,
+                size: 12,
+                color: _isConnected ? Colors.greenAccent : Colors.grey),
           ),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
         ],
@@ -303,189 +669,73 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                   ]),
                 ),
 
+              // ETA in hours/minutes format
               if (_etaMinutes != null)
                 Container(
                   margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
+                    gradient: LinearGradient(
+                      colors: [
+                        AppColors.primary.withOpacity(0.1),
+                        AppColors.primary.withOpacity(0.05),
+                      ],
+                    ),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
                         color: AppColors.primary.withOpacity(0.3)),
                   ),
                   child: Row(children: [
-                    const Icon(Icons.access_time,
-                        color: AppColors.primary, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Driver arriving in ${_etaMinutes!.toStringAsFixed(0)} minutes',
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.primary),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.access_time,
+                          color: AppColors.primary, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Estimated Arrival',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary)),
+                        Text(
+                          _formatEta(_etaMinutes!),
+                          style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.primary),
+                        ),
+                      ],
                     ),
                   ]),
                 ),
 
-              // ── MAP — hamesha dikhega ──────────────────────
+              // MAP
               Container(
-                height: 280,
                 margin: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: AppColors.border),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(16),
-                  child: Stack(
-                    children: [
-                      FlutterMap(
-                        mapController: _mapController,
-                        options: MapOptions(
-                          initialCenter: _mapCenter,
-                          initialZoom: 14,
-                        ),
-                        children: [
-                          TileLayer(
-                            urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                            userAgentPackageName:
-                            'com.example.food_delivery_app',
-                          ),
-                          MarkerLayer(markers: [
-                            if (_driverLocation != null)
-                              Marker(
-                                point: _driverLocation!,
-                                width: 50,
-                                height: 50,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primary,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                        color: Colors.white,
-                                        width: 3),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: AppColors.primary
-                                            .withOpacity(0.4),
-                                        blurRadius: 8,
-                                        spreadRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                  child: const Icon(
-                                    Icons.delivery_dining,
-                                    color: Colors.white,
-                                    size: 26,
-                                  ),
-                                ),
-                              ),
-                            if (_deliveryLocation != null)
-                              Marker(
-                                point: _deliveryLocation!,
-                                width: 50,
-                                height: 50,
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    color: AppColors.success,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                        color: Colors.white,
-                                        width: 3),
-                                  ),
-                                  child: const Icon(
-                                    Icons.home,
-                                    color: Colors.white,
-                                    size: 26,
-                                  ),
-                                ),
-                              ),
-                          ]),
-                        ],
-                      ),
-                      // Waiting overlay jab driver location nahi hai
-                      if (_driverLocation == null)
-                        Positioned(
-                          bottom: 12,
-                          left: 0,
-                          right: 0,
-                          child: Center(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius:
-                                BorderRadius.circular(20),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Waiting for driver location...',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      // SignalR status badge
-                      Positioned(
-                        top: 10,
-                        right: 10,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: _isConnected
-                                ? Colors.green.withOpacity(0.85)
-                                : Colors.red.withOpacity(0.85),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                _isConnected
-                                    ? Icons.wifi
-                                    : Icons.wifi_off,
-                                color: Colors.white,
-                                size: 12,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _isConnected ? 'Live' : 'Connecting...',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: _buildMap(),
                 ),
               ),
 
-              if (_driver != null ||
-                  _statusLabel.toLowerCase() == 'out for delivery')
-                _DriverCard(driver: _driver),
-
+              // Order Status
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -539,13 +789,21 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                 ),
               ),
 
+              // Order Details
               Container(
                 margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                     color: AppColors.surface,
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.border)),
+                    border: Border.all(color: AppColors.border),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.04),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -585,93 +843,30 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 }
 
-class _DriverCard extends StatelessWidget {
-  final Map<String, dynamic>? driver;
-  const _DriverCard({required this.driver});
-
-  @override
-  Widget build(BuildContext context) {
-    final name =
-    (driver?['name'] ?? driver?['fullName'] ?? 'Your Driver').toString();
-    final rating = driver?['rating']?.toString() ?? '—';
-    final trips = driver?['totalDeliveries']?.toString() ?? '';
-    final vehicle =
-    (driver?['vehicle'] ?? driver?['vehicleType'] ?? 'Van').toString();
-    final plate =
-    (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
-
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border)),
-      child: Row(children: [
-        Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                shape: BoxShape.circle),
-            child: const Icon(Icons.person,
-                size: 30, color: AppColors.primary)),
-        const SizedBox(width: 12),
-        Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name,
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 4),
-                  Row(children: [
-                    const Icon(Icons.star, size: 13, color: AppColors.warning),
-                    const SizedBox(width: 4),
-                    Text(
-                        trips.isNotEmpty
-                            ? '$rating ($trips deliveries)'
-                            : rating,
-                        style: const TextStyle(
-                            fontSize: 12, color: AppColors.textSecondary)),
-                  ]),
-                  const SizedBox(height: 4),
-                  Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textHint)),
-                ])),
-        IconButton(
-            icon: const Icon(Icons.phone, color: AppColors.primary),
-            onPressed: () {},
-            style: IconButton.styleFrom(
-                backgroundColor: AppColors.primary.withOpacity(0.1))),
-      ]),
-    );
-  }
-}
-
 class _Step extends StatelessWidget {
   final String title, subtitle;
   final bool completed, active, isLast;
   final IconData icon;
 
-  const _Step(
-      {required this.title,
-        required this.subtitle,
-        required this.completed,
-        required this.active,
-        required this.icon,
-        this.isLast = false});
+  const _Step({
+    required this.title,
+    required this.subtitle,
+    required this.completed,
+    required this.active,
+    required this.icon,
+    this.isLast = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    Color c = AppColors.textHint;
-    if (completed) c = AppColors.success;
-    if (active) c = AppColors.primary;
+    Color c;
+    if (completed) {
+      c = AppColors.success;
+    } else if (active) {
+      c = AppColors.primary;
+    } else {
+      c = AppColors.textHint;
+    }
 
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Column(children: [
