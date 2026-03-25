@@ -63,10 +63,37 @@ class ApiConstants {
   static String completeDelivery(String driverId, String deliveryId) =>
       '$baseUrl/api/Drivers/$driverId/deliveries/$deliveryId/complete';
 
+  // ── Earnings ───────────────────────────────────────────
   static String earningsSummary(String driverId) =>
       '$baseUrl/api/Earnings/drivers/$driverId/summary';
   static String earningsByDateRange(String driverId) =>
       '$baseUrl/api/Earnings/drivers/$driverId';
+  static String earningsCalculate(String driverId, String deliveryId) =>
+      '$baseUrl/api/Earnings/drivers/$driverId/calculate/$deliveryId';
+  static String driverPayouts(String driverId) =>
+      '$baseUrl/api/Earnings/drivers/$driverId/payouts';
+
+  // ── Payouts (admin / driver-initiated) ────────────────
+  static const String payoutsCreate                       = '$baseUrl/api/Earnings/payouts';
+  static const String payoutsList                         = '$baseUrl/api/Earnings/payouts';
+  static const String earningsExport                      = '$baseUrl/api/Earnings/export';
+  static String payoutApprove(String payoutId)            => '$baseUrl/api/Earnings/payouts/$payoutId/approve';
+  static String payoutReject(String payoutId)             => '$baseUrl/api/Earnings/payouts/$payoutId/reject';
+  static String payoutProcess(String payoutId)            => '$baseUrl/api/Earnings/payouts/$payoutId/process';
+
+  // ── Payment endpoints ──────────────────────────────────
+  static const String paymentCreateIntent   = '$baseUrl/api/payments/create-intent';
+  static String paymentByOrderId(String orderId) => '$baseUrl/api/payments/order/$orderId';
+  static const String paymentRefund         = '$baseUrl/api/payments/refund';
+  static const String paymentAdminList      = '$baseUrl/api/payments/admin/list';
+  static String paymentAdminById(String id) => '$baseUrl/api/payments/admin/$id';
+
+  // ── Saved cards ────────────────────────────────────────
+  static const String paymentSaveCard       = '$baseUrl/api/payments/cards/save';
+  static const String paymentCards          = '$baseUrl/api/payments/cards';
+  static String paymentDeleteCard(String cardId)      => '$baseUrl/api/payments/cards/$cardId';
+  static String paymentSetDefaultCard(String cardId)  => '$baseUrl/api/payments/cards/$cardId/set-default';
+  static const String paymentPayWithSavedCard = '$baseUrl/api/payments/pay-with-saved-card';
 }
 
 // ══════════════════════════════════════════════════════════
@@ -237,6 +264,14 @@ class AuthService {
     await prefs.remove(_PrefKeys.fcmToken);
   }
 
+  Future<void> clearCart() async {
+    try {
+      await http
+          .delete(Uri.parse(ApiConstants.cart), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {}
+  }
+
   // ══════════════════════════════════════════════════════
   //  AUTH
   // ══════════════════════════════════════════════════════
@@ -346,7 +381,6 @@ class AuthService {
             userId: _extract(resBody, ['id', 'userId', 'user.id', 'sub']),
           );
 
-          //  Save FCM Token for Driver
           try {
             final role = _extract(resBody, ['role']);
             if (role?.toLowerCase() == 'driver') {
@@ -361,7 +395,6 @@ class AuthService {
             debugPrint('FCM token error: $e');
           }
 
-          // Fetch /api/auth/me to resolve the real driverId
           try {
             final profileResp = await http
                 .get(Uri.parse(ApiConstants.me), headers: await _authHeaders)
@@ -383,18 +416,17 @@ class AuthService {
                 debugPrint('[login]  driverId saved: $dId');
                 await saveFcmTokenToServer(dId);
               } else {
-                // UserId se try karo
                 final userId = _extract(profile, ['userId', 'id']);
                 if (userId != null && userId.isNotEmpty) {
                   final prefs = await SharedPreferences.getInstance();
                   await prefs.setString(_PrefKeys.driverId, userId);
                   debugPrint('[login]  driverId saved from userId: $userId');
                   await saveFcmTokenToServer(userId);
+                } else {
+                  debugPrint('[login] ⚠  driverId NOT found in profile response.');
+                  debugPrint('[login]     top-level keys: ${profile.keys.toList()}');
                 }
-               else {
-                debugPrint('[login] ⚠  driverId NOT found in profile response.');
-                debugPrint('[login]     top-level keys: ${profile.keys.toList()}');
-              }}
+              }
 
               final role = _extract(profile, ['role', 'userType', 'user.role', 'userRole']);
               if (role != null) {
@@ -561,20 +593,17 @@ class AuthService {
     }
   }
 
-  //  Save FCM Token to server
   Future<void> saveFcmTokenToServer(String driverId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final fcmToken = prefs.getString(_PrefKeys.fcmToken);
       if (fcmToken == null) return;
-
       final url = ApiConstants.saveFcmToken(driverId);
       final response = await http.post(
         Uri.parse(url),
         headers: await _authHeaders,
         body: jsonEncode({'fcmToken': fcmToken}),
       ).timeout(const Duration(seconds: 15));
-
       if (response.statusCode == 200 || response.statusCode == 204) {
         debugPrint(' FCM Token saved to server!');
       } else {
@@ -606,7 +635,7 @@ class AuthService {
     }
   }
 
-  Future<ApiResult<void>> clearCart() async {
+  Future<ApiResult<void>> clearCartApi() async {
     try {
       final response = await http
           .delete(Uri.parse(ApiConstants.cart), headers: await _authHeaders)
@@ -656,10 +685,7 @@ class AuthService {
   }) async {
     try {
       final url  = ApiConstants.cartItem(cartItemId);
-      final body = {
-        'quantity': quantity,
-        'specialInstructions': specialInstructions ?? '',
-      };
+      final body = {'quantity': quantity, 'specialInstructions': specialInstructions ?? ''};
       final response = await http
           .put(Uri.parse(url), headers: await _authHeaders, body: jsonEncode(body))
           .timeout(const Duration(seconds: 30));
@@ -1134,7 +1160,8 @@ class AuthService {
       if (response.statusCode == 200) {
         final decoded = _safeJsonDecodeAny(response.body);
         if (decoded is List) {
-          return ApiResult(success: true, data: {'items': decoded, 'total': decoded.length});
+          return ApiResult(success: true,
+              data: {'items': decoded, 'total': decoded.length});
         }
         if (decoded is Map<String, dynamic>) {
           return ApiResult(success: true, data: decoded);
@@ -1210,7 +1237,8 @@ class AuthService {
         return _parseDeliveriesList(retryResponse.body);
       }
       return ApiResult(success: false,
-          message: _errorMessage(_safeJsonDecode(retryResponse.body), retryResponse.statusCode));
+          message: _errorMessage(
+              _safeJsonDecode(retryResponse.body), retryResponse.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
@@ -1294,10 +1322,11 @@ class AuthService {
       if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-            'photo', photoBytes, filename: photoFileName ?? 'pickup_photo.jpg'));
+            'photo', photoBytes,
+            filename: photoFileName ?? 'pickup_photo.jpg'));
       }
-      final streamed = await request.send().timeout(const Duration(seconds: 60));
-      final response = await http.Response.fromStream(streamed);
+      final streamed  = await request.send().timeout(const Duration(seconds: 60));
+      final response  = await http.Response.fromStream(streamed);
       _log('CONFIRM PICKUP RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
@@ -1322,7 +1351,8 @@ class AuthService {
   }) async {
     try {
       final url = ApiConstants.completeDelivery(driverId, deliveryId);
-      _log('COMPLETE DELIVERY REQUEST', url, extra: 'recipientName: $recipientName');
+      _log('COMPLETE DELIVERY REQUEST', url,
+          extra: 'recipientName: $recipientName');
       final request = http.MultipartRequest('POST', Uri.parse(url));
       final token = await getAccessToken();
       if (token != null) {
@@ -1333,14 +1363,16 @@ class AuthService {
       if (notes != null && notes.isNotEmpty) request.fields['notes'] = notes;
       if (photoBytes != null && photoBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-            'photo', photoBytes, filename: photoFileName ?? 'delivery_photo.jpg'));
+            'photo', photoBytes,
+            filename: photoFileName ?? 'delivery_photo.jpg'));
       }
       if (signatureBytes != null && signatureBytes.isNotEmpty) {
         request.files.add(http.MultipartFile.fromBytes(
-            'signature', signatureBytes, filename: signatureFileName ?? 'signature.png'));
+            'signature', signatureBytes,
+            filename: signatureFileName ?? 'signature.png'));
       }
-      final streamed = await request.send().timeout(const Duration(seconds: 60));
-      final response = await http.Response.fromStream(streamed);
+      final streamed  = await request.send().timeout(const Duration(seconds: 60));
+      final response  = await http.Response.fromStream(streamed);
       _log('COMPLETE DELIVERY RESPONSE', url,
           status: response.statusCode, body: response.body);
       if (response.statusCode == 200 || response.statusCode == 201) {
@@ -1356,6 +1388,8 @@ class AuthService {
   // ══════════════════════════════════════════════════════
   //  EARNINGS
   // ══════════════════════════════════════════════════════
+
+  /// GET /api/Earnings/drivers/{driverId}/summary?period=week
   Future<ApiResult<Map<String, dynamic>>> getEarningsSummary({
     required String driverId, String period = 'week',
   }) async {
@@ -1379,6 +1413,7 @@ class AuthService {
     }
   }
 
+  /// GET /api/Earnings/drivers/{driverId}?fromDate=...&toDate=...
   Future<ApiResult<Map<String, dynamic>>> getEarningsByDateRange({
     required String driverId,
     required String fromDate,
@@ -1404,7 +1439,223 @@ class AuthService {
     }
   }
 
-  Future<ApiResult<Map<String, dynamic>>> getDeliveryByOrderId(String orderId) async {
+  /// POST /api/Earnings/drivers/{driverId}/calculate/{deliveryId}
+  Future<ApiResult<Map<String, dynamic>>> calculateEarnings({
+    required String driverId,
+    required String deliveryId,
+  }) async {
+    try {
+      final url = ApiConstants.earningsCalculate(driverId, deliveryId);
+      _log('CALCULATE EARNINGS REQUEST', url,
+          extra: 'driverId: $driverId | deliveryId: $deliveryId');
+      final response = await http
+          .post(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('CALCULATE EARNINGS RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/Earnings/drivers/{driverId}/payouts
+  /// Returns a list of payout records for this driver.
+  Future<ApiResult<List<dynamic>>> getDriverPayouts({
+    required String driverId,
+  }) async {
+    try {
+      final url = ApiConstants.driverPayouts(driverId);
+      _log('GET DRIVER PAYOUTS REQUEST', url,
+          extra: 'driverId: $driverId');
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DRIVER PAYOUTS RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        final decoded = _safeJsonDecodeAny(response.body);
+        if (decoded is List) return ApiResult(success: true, data: decoded);
+        if (decoded is Map<String, dynamic>) {
+          final list = decoded['data'] ?? decoded['payouts'] ?? decoded['items'];
+          if (list is List) return ApiResult(success: true, data: list);
+        }
+        return const ApiResult(success: true, data: []);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Earnings/payouts
+  /// Driver requests a payout for a given period.
+  Future<ApiResult<Map<String, dynamic>>> requestPayout({
+    required String driverId,
+    required String periodStart, // ISO 8601 e.g. "2026-03-01T00:00:00Z"
+    required String periodEnd,
+  }) async {
+    try {
+      _log('REQUEST PAYOUT REQUEST', ApiConstants.payoutsCreate,
+          extra: 'driverId: $driverId | $periodStart → $periodEnd');
+      final response = await http
+          .post(Uri.parse(ApiConstants.payoutsCreate),
+          headers: await _authHeaders,
+          body: jsonEncode({
+            'driverId':    driverId,
+            'periodStart': periodStart,
+            'periodEnd':   periodEnd,
+          }))
+          .timeout(const Duration(seconds: 30));
+      _log('REQUEST PAYOUT RESPONSE', ApiConstants.payoutsCreate,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/Earnings/payouts?status=...&dateFrom=...&dateTo=...
+  /// Admin: list all payouts with optional filters.
+  Future<ApiResult<List<dynamic>>> getPayoutsList({
+    int? status, String? dateFrom, String? dateTo,
+  }) async {
+    try {
+      final params = <String, String>{
+        if (status   != null) 'status':   status.toString(),
+        if (dateFrom != null) 'dateFrom': dateFrom,
+        if (dateTo   != null) 'dateTo':   dateTo,
+      };
+      final uri = Uri.parse(ApiConstants.payoutsList)
+          .replace(queryParameters: params.isEmpty ? null : params);
+      _log('GET PAYOUTS LIST REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET PAYOUTS LIST RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        final decoded = _safeJsonDecodeAny(response.body);
+        if (decoded is List) return ApiResult(success: true, data: decoded);
+        if (decoded is Map<String, dynamic>) {
+          final list = decoded['data'] ?? decoded['payouts'] ?? decoded['items'];
+          if (list is List) return ApiResult(success: true, data: list);
+        }
+        return const ApiResult(success: true, data: []);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Earnings/payouts/{payoutId}/approve
+  Future<ApiResult<Map<String, dynamic>>> approvePayout(String payoutId) async {
+    try {
+      final url = ApiConstants.payoutApprove(payoutId);
+      _log('APPROVE PAYOUT REQUEST', url);
+      final response = await http
+          .post(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('APPROVE PAYOUT RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Earnings/payouts/{payoutId}/reject
+  Future<ApiResult<Map<String, dynamic>>> rejectPayout({
+    required String payoutId,
+    required String reason,
+  }) async {
+    try {
+      final url = ApiConstants.payoutReject(payoutId);
+      _log('REJECT PAYOUT REQUEST', url, extra: 'reason: $reason');
+      final response = await http
+          .post(Uri.parse(url),
+          headers: await _authHeaders,
+          body: jsonEncode({'reason': reason}))
+          .timeout(const Duration(seconds: 30));
+      _log('REJECT PAYOUT RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/Earnings/payouts/{payoutId}/process
+  Future<ApiResult<Map<String, dynamic>>> processPayout(String payoutId) async {
+    try {
+      final url = ApiConstants.payoutProcess(payoutId);
+      _log('PROCESS PAYOUT REQUEST', url);
+      final response = await http
+          .post(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('PROCESS PAYOUT RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/Earnings/export?fromDate=...&toDate=...&driverId=...
+  Future<ApiResult<Map<String, dynamic>>> exportEarnings({
+    String? fromDate,
+    String? toDate,
+    String? driverId,
+  }) async {
+    try {
+      final params = <String, String>{
+        if (fromDate != null) 'fromDate': fromDate,
+        if (toDate   != null) 'toDate':   toDate,
+        if (driverId != null) 'driverId': driverId,
+      };
+      final uri = Uri.parse(ApiConstants.earningsExport)
+          .replace(queryParameters: params.isEmpty ? null : params);
+      _log('EXPORT EARNINGS REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 60));
+      _log('EXPORT EARNINGS RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<Map<String, dynamic>>> getDeliveryByOrderId(
+      String orderId) async {
     try {
       final url = '${ApiConstants.baseUrl}/api/Deliveries/order/$orderId';
       final response = await http
@@ -1414,6 +1665,388 @@ class AuthService {
         return ApiResult(success: true, data: _safeJsonDecode(response.body));
       }
       return ApiResult(success: false, message: 'Delivery not found');
+    } on Exception catch (e) {
+      return ApiResult(success: false,
+          message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  PAYMENTS
+  // ══════════════════════════════════════════════════════
+
+  /// Creates a Stripe PaymentIntent. Returns clientSecret in data.
+  Future<ApiResult<Map<String, dynamic>>> createPaymentIntent({
+    required String orderId,
+  }) async {
+    try {
+      _log('CREATE PAYMENT INTENT REQUEST', ApiConstants.paymentCreateIntent,
+          extra: 'orderId: $orderId');
+      final response = await http
+          .post(Uri.parse(ApiConstants.paymentCreateIntent),
+          headers: await _authHeaders,
+          body: jsonEncode({'orderId': orderId}))
+          .timeout(const Duration(seconds: 30));
+      _log('CREATE PAYMENT INTENT RESPONSE', ApiConstants.paymentCreateIntent,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<Map<String, dynamic>>> getPaymentByOrderId(
+      String orderId) async {
+    try {
+      final url = ApiConstants.paymentByOrderId(orderId);
+      _log('GET PAYMENT BY ORDER ID REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET PAYMENT BY ORDER ID RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<Map<String, dynamic>>> refundPayment({
+    required String orderId,
+    required double amount,
+    required String reason,
+  }) async {
+    try {
+      _log('REFUND PAYMENT REQUEST', ApiConstants.paymentRefund,
+          extra: 'orderId: $orderId | amount: $amount');
+      final response = await http
+          .post(Uri.parse(ApiConstants.paymentRefund),
+          headers: await _authHeaders,
+          body: jsonEncode(
+              {'orderId': orderId, 'amount': amount, 'reason': reason}))
+          .timeout(const Duration(seconds: 30));
+      _log('REFUND PAYMENT RESPONSE', ApiConstants.paymentRefund,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ── Saved Cards ────────────────────────────────────────
+  Future<ApiResult<List<dynamic>>> getSavedCards() async {
+    try {
+      _log('GET SAVED CARDS REQUEST', ApiConstants.paymentCards);
+      final response = await http
+          .get(Uri.parse(ApiConstants.paymentCards), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET SAVED CARDS RESPONSE', ApiConstants.paymentCards,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        final decoded = _safeJsonDecodeAny(response.body);
+        if (decoded is List) return ApiResult(success: true, data: decoded);
+        if (decoded is Map<String, dynamic>) {
+          final list = decoded['data'] ?? decoded['cards'] ?? decoded['items'];
+          if (list is List) return ApiResult(success: true, data: list);
+        }
+        return const ApiResult(success: true, data: []);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<Map<String, dynamic>>> saveCard({
+    required String paymentMethodId,
+    bool setAsDefault = false,
+  }) async {
+    try {
+      _log('SAVE CARD REQUEST', ApiConstants.paymentSaveCard,
+          extra: 'paymentMethodId: $paymentMethodId');
+      final response = await http
+          .post(Uri.parse(ApiConstants.paymentSaveCard),
+          headers: await _authHeaders,
+          body: jsonEncode({
+            'paymentMethodId': paymentMethodId,
+            'setAsDefault':    setAsDefault,
+          }))
+          .timeout(const Duration(seconds: 30));
+      _log('SAVE CARD RESPONSE', ApiConstants.paymentSaveCard,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<void>> deleteCard(String cardId) async {
+    try {
+      final url = ApiConstants.paymentDeleteCard(cardId);
+      _log('DELETE CARD REQUEST', url);
+      final response = await http
+          .delete(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('DELETE CARD RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return const ApiResult(success: true);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<void>> setDefaultCard(String cardId) async {
+    try {
+      final url = ApiConstants.paymentSetDefaultCard(cardId);
+      _log('SET DEFAULT CARD REQUEST', url);
+      final response = await http
+          .post(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('SET DEFAULT CARD RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return const ApiResult(success: true);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  Future<ApiResult<Map<String, dynamic>>> payWithSavedCard({
+    required String orderId,
+    required String cardId,
+  }) async {
+    try {
+      _log('PAY WITH SAVED CARD REQUEST', ApiConstants.paymentPayWithSavedCard,
+          extra: 'orderId: $orderId | cardId: $cardId');
+      final response = await http
+          .post(Uri.parse(ApiConstants.paymentPayWithSavedCard),
+          headers: await _authHeaders,
+          body: jsonEncode({'orderId': orderId, 'cardId': cardId}))
+          .timeout(const Duration(seconds: 30));
+      _log('PAY WITH SAVED CARD RESPONSE', ApiConstants.paymentPayWithSavedCard,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  DISPUTES
+  // ══════════════════════════════════════════════════════
+
+  /// POST /api/disputes  (multipart — supports evidence images)
+  /// POST /api/disputes
+  ///
+  /// The backend accepts application/json when there are no evidence images.
+  /// When the user attaches photos we fall back to multipart/form-data.
+  /// Sending multipart without images caused a 415 Unsupported Media Type.
+  Future<ApiResult<Map<String, dynamic>>> raiseDispute({
+    required String       orderId,
+    required int          disputeType,
+    required String       reason,
+    String?               paymentId,
+    List<List<int>>?      photoBytes,
+    List<String>?         photoNames,
+  }) async {
+    try {
+      const url = 'https://api.neptasolutions.co.uk/api/disputes';
+      _log('RAISE DISPUTE REQUEST', url,
+          extra: 'orderId: $orderId | type: $disputeType | '
+              'hasPhotos: ${(photoBytes?.isNotEmpty ?? false)}');
+
+      final hasPhotos =
+          photoBytes != null && photoBytes.isNotEmpty;
+
+      http.Response response;
+
+      if (!hasPhotos) {
+        // ── No images → send as JSON (required by backend) ──────────────
+        final body = <String, dynamic>{
+          'orderId':     orderId,
+          'disputeType': disputeType,
+          'reason':      reason,
+        };
+        if (paymentId != null && paymentId.isNotEmpty) {
+          body['paymentId'] = paymentId;
+        }
+
+        response = await http
+            .post(
+              Uri.parse(url),
+              headers: await _authHeaders, // includes Content-Type: application/json
+              body:    jsonEncode(body),
+            )
+            .timeout(const Duration(seconds: 30));
+      } else {
+        // ── Has images → multipart/form-data ────────────────────────────
+        final token = await getAccessToken();
+        final request = http.MultipartRequest('POST', Uri.parse(url));
+        if (token != null) {
+          request.headers['Authorization'] = 'Bearer $token';
+          request.headers['Accept']        = 'application/json';
+        }
+        request.fields['orderId']     = orderId;
+        request.fields['disputeType'] = disputeType.toString();
+        request.fields['reason']      = reason;
+        if (paymentId != null && paymentId.isNotEmpty) {
+          request.fields['paymentId'] = paymentId;
+        }
+        for (int i = 0; i < photoBytes.length; i++) {
+          request.files.add(http.MultipartFile.fromBytes(
+            'files',
+            photoBytes[i],
+            filename: (photoNames != null && i < photoNames.length)
+                ? photoNames[i]
+                : 'evidence_$i.jpg',
+          ));
+        }
+        final streamed = await request.send().timeout(const Duration(seconds: 60));
+        response = await http.Response.fromStream(streamed);
+      }
+
+      _log('RAISE DISPUTE RESPONSE', url,
+          status: response.statusCode, body: response.body);
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/disputes?page=1&pageSize=10
+  Future<ApiResult<Map<String, dynamic>>> getMyDisputes({
+    int page = 1, int pageSize = 10,
+  }) async {
+    try {
+      final uri = Uri.parse('https://api.neptasolutions.co.uk/api/disputes')
+          .replace(queryParameters: {
+        'page':     page.toString(),
+        'pageSize': pageSize.toString(),
+      });
+      _log('GET MY DISPUTES REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET MY DISPUTES RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/disputes/{disputeId}
+  Future<ApiResult<Map<String, dynamic>>> getDisputeById(String disputeId) async {
+    try {
+      final url = 'https://api.neptasolutions.co.uk/api/disputes/$disputeId';
+      _log('GET DISPUTE BY ID REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET DISPUTE BY ID RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// GET /api/disputes/admin/all  (admin only)
+  Future<ApiResult<Map<String, dynamic>>> adminGetAllDisputes({
+    int? status, int page = 1, int pageSize = 10,
+  }) async {
+    try {
+      final params = <String, String>{
+        'page':     page.toString(),
+        'pageSize': pageSize.toString(),
+        if (status != null) 'status': status.toString(),
+      };
+      final uri = Uri.parse(
+              'https://api.neptasolutions.co.uk/api/disputes/admin/all')
+          .replace(queryParameters: params);
+      _log('ADMIN GET ALL DISPUTES REQUEST', uri.toString());
+      final response = await http
+          .get(uri, headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('ADMIN GET ALL DISPUTES RESPONSE', uri.toString(),
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+
+  /// POST /api/disputes/admin/{disputeId}/resolve  (admin only)
+  Future<ApiResult<Map<String, dynamic>>> adminResolveDispute({
+    required String disputeId,
+    required int    resolutionType,
+    required String notes,
+  }) async {
+    try {
+      final url =
+          'https://api.neptasolutions.co.uk/api/disputes/admin/$disputeId/resolve';
+      _log('ADMIN RESOLVE DISPUTE REQUEST', url,
+          extra: 'disputeId: $disputeId | type: $resolutionType');
+      final response = await http
+          .post(Uri.parse(url),
+          headers: await _authHeaders,
+          body: jsonEncode({
+            'resolutionType': resolutionType,
+            'notes':          notes,
+          }))
+          .timeout(const Duration(seconds: 30));
+      _log('ADMIN RESOLVE DISPUTE RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }

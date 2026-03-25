@@ -54,7 +54,8 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
       (item['category'] ?? item['product']?['category'] ?? '').toString();
 
   double _itemPrice(Map<String, dynamic> item) =>
-      ((item['unitPrice'] ?? item['price'] ?? item['product']?['price'] ?? 0) as num)
+      ((item['unitPrice'] ?? item['price'] ?? item['product']?['price'] ?? 0)
+              as num)
           .toDouble();
 
   int _itemQty(Map<String, dynamic> item) =>
@@ -64,7 +65,8 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
       (item['unit'] ?? item['product']?['unit'] ?? 'unit').toString();
 
   String _itemSupplier(Map<String, dynamic> item) =>
-      (item['supplierName'] ?? item['supplier']?['name'] ?? 'Supplier').toString();
+      (item['supplierName'] ?? item['supplier']?['name'] ?? 'Supplier')
+          .toString();
 
   double get _subtotal =>
       _cartItems.fold(0, (s, i) => s + (_itemPrice(i) * _itemQty(i)));
@@ -78,7 +80,10 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
   // ── API calls ──────────────────────────────────────────
   Future<void> _loadCart() async {
     if (!mounted) return;
-    setState(() { _isLoading = true; _errorMessage = null; });
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
 
     final result = await AuthService.instance.getCart();
     if (!mounted) return;
@@ -102,7 +107,10 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _updateQuantity(int index, int newQty) async {
-    if (newQty <= 0) { await _removeItem(index); return; }
+    if (newQty <= 0) {
+      await _removeItem(index);
+      return;
+    }
     final item = _cartItems[index];
     final id   = _itemId(item);
     if (id.isEmpty) return;
@@ -134,13 +142,17 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ── FIXED: uses clearCartApi() which returns ApiResult<void> ──
   Future<void> _clearCart() async {
     setState(() => _isClearing = true);
-    final result = await AuthService.instance.clearCart();
+    final result = await AuthService.instance.clearCartApi();
     if (!mounted) return;
     setState(() => _isClearing = false);
     if (result.success) {
-      setState(() { _cartItems.clear(); _cartMeta = null; });
+      setState(() {
+        _cartItems.clear();
+        _cartMeta = null;
+      });
       _snack('Cart cleared');
     } else {
       _snack(result.message ?? 'Failed to clear cart.', isError: true);
@@ -165,15 +177,22 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
 
   IconData _icon(String cat) {
     switch (cat.toLowerCase()) {
-      case 'bakery':         return Icons.bakery_dining;
-      case 'meat':           return Icons.set_meal;
-      case 'dairy':          return Icons.local_drink;
+      case 'bakery':
+        return Icons.bakery_dining;
+      case 'meat':
+        return Icons.set_meal;
+      case 'dairy':
+        return Icons.local_drink;
       case 'fruit & veg':
       case 'fruit and veg':
-      case 'vegetables':     return Icons.eco;
-      case 'frozen':         return Icons.ac_unit;
-      case 'dry items':      return Icons.grain;
-      default:               return Icons.shopping_basket;
+      case 'vegetables':
+        return Icons.eco;
+      case 'frozen':
+        return Icons.ac_unit;
+      case 'dry items':
+        return Icons.grain;
+      default:
+        return Icons.shopping_basket;
     }
   }
 
@@ -190,10 +209,14 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
           if (_cartItems.isNotEmpty)
             _isClearing
                 ? const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    child: SizedBox(width: 20, height: 20,
+                    padding:
+                        EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
-                          color: AppColors.white, strokeWidth: 2)),
+                          color: AppColors.white, strokeWidth: 2),
+                    ),
                   )
                 : TextButton(
                     onPressed: _clearCart,
@@ -207,9 +230,7 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
           : _errorMessage != null
               ? _ErrorView(message: _errorMessage!, onRetry: _loadCart)
               : _cartItems.isEmpty
-                  ? _EmptyCartView(
-                      onBrowse: widget.onBrowseTap ?? () {},
-                    )
+                  ? _EmptyCartView(onBrowse: widget.onBrowseTap ?? () {})
                   : Column(children: [
                       Expanded(
                         child: RefreshIndicator(
@@ -218,40 +239,54 @@ class CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
                             padding: const EdgeInsets.all(16),
                             itemCount: _grouped.length,
                             itemBuilder: (_, i) {
-                              final supplier = _grouped.keys.elementAt(i);
-                              final items    = _grouped[supplier]!;
+                              final supplier =
+                                  _grouped.keys.elementAt(i);
+                              final items = _grouped[supplier]!;
                               return Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
                                 children: [
                                   Container(
                                     padding: const EdgeInsets.all(12),
-                                    margin: const EdgeInsets.only(bottom: 12),
+                                    margin: const EdgeInsets.only(
+                                        bottom: 12),
                                     decoration: BoxDecoration(
-                                      color: AppColors.primary.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(12),
+                                      color: AppColors.primary
+                                          .withOpacity(0.1),
+                                      borderRadius:
+                                          BorderRadius.circular(12),
                                     ),
                                     child: Row(children: [
                                       const Icon(Icons.store,
-                                          color: AppColors.primary, size: 20),
+                                          color: AppColors.primary,
+                                          size: 20),
                                       const SizedBox(width: 8),
-                                      Text(supplier, style: const TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.bold,
-                                          color: AppColors.primary)),
+                                      Text(supplier,
+                                          style: const TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.bold,
+                                              color: AppColors.primary)),
                                     ]),
                                   ),
                                   ...items.map((item) {
-                                    final gi = _cartItems.indexOf(item);
+                                    final gi =
+                                        _cartItems.indexOf(item);
                                     return _CartItemCard(
-                                      item:       item,
-                                      itemName:   _itemName(item),
-                                      price:      _itemPrice(item),
-                                      quantity:   _itemQty(item),
-                                      unit:       _itemUnit(item),
-                                      icon:       _icon(_itemCategory(item)),
-                                      onIncrease: () => _updateQuantity(gi, _itemQty(item) + 1),
-                                      onDecrease: () => _updateQuantity(gi, _itemQty(item) - 1),
-                                      onRemove:   () => _removeItem(gi),
+                                      item: item,
+                                      itemName: _itemName(item),
+                                      price: _itemPrice(item),
+                                      quantity: _itemQty(item),
+                                      unit: _itemUnit(item),
+                                      icon: _icon(
+                                          _itemCategory(item)),
+                                      onIncrease: () =>
+                                          _updateQuantity(gi,
+                                              _itemQty(item) + 1),
+                                      onDecrease: () =>
+                                          _updateQuantity(gi,
+                                              _itemQty(item) - 1),
+                                      onRemove: () =>
+                                          _removeItem(gi),
                                     );
                                   }),
                                   const SizedBox(height: 16),
@@ -298,9 +333,12 @@ class _OrderSummaryBar extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10, offset: const Offset(0, -5))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, -5))
+        ],
       ),
       child: SafeArea(
         top: false,
@@ -312,7 +350,8 @@ class _OrderSummaryBar extends StatelessWidget {
           _SummaryRow('Total', '£${total.toStringAsFixed(2)}', bold: true),
           const SizedBox(height: 16),
           SizedBox(
-            width: double.infinity, height: 56,
+            width: double.infinity,
+            height: 56,
             child: ElevatedButton(
               onPressed: () async {
                 final success = await Navigator.push<bool>(
@@ -342,18 +381,25 @@ class _SummaryRow extends StatelessWidget {
   final String label, value;
   final bool bold;
   const _SummaryRow(this.label, this.value, {this.bold = false});
+
   @override
   Widget build(BuildContext context) => Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
-      Text(label, style: TextStyle(
-          fontSize: bold ? 18 : 15,
-          fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-          color: AppColors.textSecondary)),
-      Text(value, style: TextStyle(
-          fontSize: bold ? 20 : 15,
-          fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-          color: bold ? AppColors.primary : AppColors.textPrimary)),
+      Text(label,
+          style: TextStyle(
+              fontSize: bold ? 18 : 15,
+              fontWeight:
+                  bold ? FontWeight.bold : FontWeight.normal,
+              color: AppColors.textSecondary)),
+      Text(value,
+          style: TextStyle(
+              fontSize: bold ? 20 : 15,
+              fontWeight:
+                  bold ? FontWeight.bold : FontWeight.w600,
+              color: bold
+                  ? AppColors.primary
+                  : AppColors.textPrimary)),
     ],
   );
 }
@@ -364,24 +410,30 @@ class _SummaryRow extends StatelessWidget {
 class _EmptyCartView extends StatelessWidget {
   final VoidCallback onBrowse;
   const _EmptyCartView({required this.onBrowse});
+
   @override
   Widget build(BuildContext context) => Center(
     child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      const Icon(Icons.shopping_cart_outlined, size: 100, color: AppColors.textHint),
+      const Icon(Icons.shopping_cart_outlined,
+          size: 100, color: AppColors.textHint),
       const SizedBox(height: 24),
       const Text('Your cart is empty',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+          style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
               color: AppColors.textPrimary)),
       const SizedBox(height: 8),
       const Text('Add products to get started',
-          style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
+          style: TextStyle(
+              fontSize: 16, color: AppColors.textSecondary)),
       const SizedBox(height: 32),
       ElevatedButton.icon(
         onPressed: onBrowse,
-        icon: const Icon(Icons.shopping_bag),
+        icon:  const Icon(Icons.shopping_bag),
         label: const Text('Browse Products'),
         style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16)),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 32, vertical: 16)),
       ),
     ]),
   );
@@ -394,6 +446,7 @@ class _ErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
   const _ErrorView({required this.message, required this.onRetry});
+
   @override
   Widget build(BuildContext context) => Center(
     child: Padding(
@@ -401,11 +454,15 @@ class _ErrorView extends StatelessWidget {
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
         const Icon(Icons.error_outline, size: 60, color: AppColors.error),
         const SizedBox(height: 16),
-        Text(message, textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 16, color: AppColors.textSecondary)),
+        Text(message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                fontSize: 16, color: AppColors.textSecondary)),
         const SizedBox(height: 24),
-        ElevatedButton.icon(onPressed: onRetry,
-            icon: const Icon(Icons.refresh), label: const Text('Retry')),
+        ElevatedButton.icon(
+            onPressed: onRetry,
+            icon:  const Icon(Icons.refresh),
+            label: const Text('Retry')),
       ]),
     ),
   );
@@ -416,24 +473,31 @@ class _ErrorView extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════
 class _CartItemCard extends StatelessWidget {
   final Map<String, dynamic> item;
-  final String itemName, unit;
-  final double price;
-  final int    quantity;
+  final String   itemName, unit;
+  final double   price;
+  final int      quantity;
   final IconData icon;
   final VoidCallback onIncrease, onDecrease, onRemove;
 
   const _CartItemCard({
-    required this.item,       required this.itemName, required this.price,
-    required this.quantity,   required this.unit,     required this.icon,
-    required this.onIncrease, required this.onDecrease, required this.onRemove,
+    required this.item,
+    required this.itemName,
+    required this.price,
+    required this.quantity,
+    required this.unit,
+    required this.icon,
+    required this.onIncrease,
+    required this.onDecrease,
+    required this.onRemove,
   });
 
   @override
   Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.only(bottom: 12),
+    margin:  const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(12),
     decoration: BoxDecoration(
-      color: AppColors.surface, borderRadius: BorderRadius.circular(12),
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(12),
       border: Border.all(color: AppColors.border),
     ),
     child: Row(children: [
@@ -446,27 +510,50 @@ class _CartItemCard extends StatelessWidget {
         child: Icon(icon, size: 32, color: AppColors.primary),
       ),
       const SizedBox(width: 12),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(itemName, style: const TextStyle(
-            fontSize: 15, fontWeight: FontWeight.bold,
-            color: AppColors.textPrimary)),
-        const SizedBox(height: 4),
-        Text('£${price.toStringAsFixed(2)} per $unit',
-            style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
-        const SizedBox(height: 8),
-        Text('£${(price * quantity).toStringAsFixed(2)}',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
-                color: AppColors.primary)),
-      ])),
+      Expanded(
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Text(itemName,
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 4),
+          Text('£${price.toStringAsFixed(2)} per $unit',
+              style: const TextStyle(
+                  fontSize: 13, color: AppColors.textSecondary)),
+          const SizedBox(height: 8),
+          Text('£${(price * quantity).toStringAsFixed(2)}',
+              style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary)),
+        ]),
+      ),
       Column(children: [
         Row(children: [
-          _QtyBtn(icon: Icons.remove, bg: AppColors.surface,
-              fg: AppColors.textPrimary, onTap: onDecrease, border: true),
-          SizedBox(width: 40, child: Center(child: Text('$quantity',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)))),
-          _QtyBtn(icon: Icons.add, bg: AppColors.primary,
-              fg: AppColors.white, onTap: onIncrease),
+          _QtyBtn(
+              icon: Icons.remove,
+              bg:   AppColors.surface,
+              fg:   AppColors.textPrimary,
+              onTap: onDecrease,
+              border: true),
+          SizedBox(
+            width: 40,
+            child: Center(
+              child: Text('$quantity',
+                  style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+            ),
+          ),
+          _QtyBtn(
+              icon: Icons.add,
+              bg:   AppColors.primary,
+              fg:   AppColors.white,
+              onTap: onIncrease),
         ]),
         const SizedBox(height: 8),
         TextButton(
@@ -484,19 +571,27 @@ class _CartItemCard extends StatelessWidget {
 }
 
 class _QtyBtn extends StatelessWidget {
-  final IconData icon;
-  final Color bg, fg;
+  final IconData     icon;
+  final Color        bg, fg;
   final VoidCallback onTap;
-  final bool border;
-  const _QtyBtn({required this.icon, required this.bg, required this.fg,
-      required this.onTap, this.border = false});
+  final bool         border;
+
+  const _QtyBtn({
+    required this.icon,
+    required this.bg,
+    required this.fg,
+    required this.onTap,
+    this.border = false,
+  });
+
   @override
   Widget build(BuildContext context) => GestureDetector(
     onTap: onTap,
     child: Container(
       width: 32, height: 32,
       decoration: BoxDecoration(
-        color: bg, borderRadius: BorderRadius.circular(8),
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
         border: border ? Border.all(color: AppColors.border) : null,
       ),
       child: Icon(icon, size: 18, color: fg),
