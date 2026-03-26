@@ -4,9 +4,10 @@ import 'package:food_delivery_app/presentation/splash_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-FlutterLocalNotificationsPlugin();
+    FlutterLocalNotificationsPlugin();
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -17,6 +18,11 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // ── Stripe init (must be before runApp) ───────────────
+  Stripe.publishableKey = 'pk_test_51TChtMFRpcmxK2pQ84PzPDoZ0mVsQWP7OvJF45rpu6FFM96rf4vekt69ZdXmZTE3DDL2rQ2i5jCIWUlfSnQJusOD00XSG3Xwxm';
+  await Stripe.instance.applySettings();
+
+  // ── Firebase init ──────────────────────────────────────
   try {
     await Firebase.initializeApp();
     debugPrint('✅ Firebase initialized!');
@@ -24,22 +30,24 @@ void main() async {
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
     const AndroidInitializationSettings androidSettings =
-    AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('@mipmap/ic_launcher');
     const InitializationSettings initSettings =
-    InitializationSettings(android: androidSettings);
+        InitializationSettings(android: androidSettings);
     await flutterLocalNotificationsPlugin.initialize(initSettings);
 
-    AndroidNotificationChannel channel = const AndroidNotificationChannel(
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'high_importance_channel',
       'High Importance Notifications',
       importance: Importance.high,
     );
 
     await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(channel);
 
-    await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+    await FirebaseMessaging.instance
+        .setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
@@ -53,7 +61,7 @@ void main() async {
 
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint('📱 Foreground: ${message.notification?.title}');
-      RemoteNotification? notification = message.notification;
+      final notification = message.notification;
       if (notification != null) {
         flutterLocalNotificationsPlugin.show(
           notification.hashCode,
@@ -74,7 +82,6 @@ void main() async {
 
     final token = await FirebaseMessaging.instance.getToken();
     debugPrint('🔥 FCM Token: $token');
-
   } catch (e) {
     debugPrint('❌ Firebase error: $e');
   }

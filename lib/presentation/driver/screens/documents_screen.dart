@@ -3,10 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// ─────────────────────────────────────────────────────────
-//  Document type definitions
-// ─────────────────────────────────────────────────────────
 class _DocType {
   final String   apiKey;
   final String   label;
@@ -47,9 +45,7 @@ const _docTypes = [
   ),
 ];
 
-// ─────────────────────────────────────────────────────────
-//  Documents Screen
-// ─────────────────────────────────────────────────────────
+
 class DocumentsScreen extends StatefulWidget {
   const DocumentsScreen({super.key});
 
@@ -69,22 +65,138 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadDriverId();
+    _loadDriverIdAndDocuments();
   }
 
-  Future<void> _loadDriverId() async {
+ 
+  Future<void> _loadDriverIdAndDocuments() async {
     final id = await AuthService.instance.getSavedDriverId();
-    if (mounted) setState(() { _driverId = id; _loadingDriverId = false; });
+    if (!mounted) return;
+
+    setState(() { _driverId = id; _loadingDriverId = false; });
+    if (id == null || id.isEmpty) return;
+
+    // Step 1: restore from SharedPreferences (instant, offline)
+    await _restoreFromPrefs(id);
+
+    // Step 2: fetch from server and update
+    await _fetchDocumentStatusFromServer(id);
   }
 
-  // ── Pick image bytes — reads immediately, never holds the path ────────
+  // ── Persist uploaded set to SharedPreferences ─────────────────────────
+  // Key format: docs_uploaded_{driverId}  →  comma-separated apiKeys
+  String _prefsKey(String driverId) => 'docs_uploaded_$driverId';
+
+  Future<void> _restoreFromPrefs(String driverId) async {
+    try {
+      final prefs   = await SharedPreferences.getInstance();
+      final saved   = prefs.getString(_prefsKey(driverId)) ?? '';
+      final apiKeys = saved.isEmpty
+          ? <String>[]
+          : saved.split(',').where((s) => s.isNotEmpty).toList();
+      if (apiKeys.isNotEmpty && mounted) {
+        setState(() => _uploaded.addAll(apiKeys));
+        debugPrint('[Documents]  Restored from prefs: $apiKeys');
+      }
+    } catch (e) {
+      debugPrint('[Documents] prefs restore error: $e');
+    }
+  }
+
+  Future<void> _saveToPrefs(String driverId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsKey(driverId), _uploaded.join(','));
+      debugPrint('[Documents]  Saved to prefs: ${_uploaded.toList()}');
+    } catch (e) {
+      debugPrint('[Documents] prefs save error: $e');
+    }
+  }
+
+
+  Future<void> _fetchDocumentStatusFromServer(String driverId) async {
+    try {
+      debugPrint('[Documents] 🔄 Fetching driver profile for doc status...');
+      final result = await AuthService.instance.getDriverProfile(driverId);
+
+      debugPrint('\n╔══════════════════════════════════════╗');
+      debugPrint('║  GET DRIVER PROFILE (for doc status)');
+      debugPrint('║  success: ${result.success}');
+      debugPrint('║  data keys: ${result.data?.keys.toList()}');
+      debugPrint('╚══════════════════════════════════════╝');
+
+      if (!result.success || result.data == null) return;
+
+      final profile = result.data!;
+
+      // Map of docType apiKey → list of possible field names in the response
+      // Adjust these field names if your API uses different keys
+      final fieldMap = <String, List<String>>{
+        'DrivingLicense':    [
+          'licenseImageUrl', 'license_image_url', 'drivingLicenseUrl',
+          'driving_license_url', 'licenseDocument', 'licenseDocumentUrl',
+        ],
+        'Insurance':         [
+          'insuranceImageUrl', 'insurance_image_url', 'insuranceUrl',
+          'insurance_url', 'insuranceDocument', 'insuranceDocumentUrl',
+        ],
+        'VehicleRegistration': [
+          'vehicleRegistrationUrl', 'vehicle_registration_url',
+          'registrationUrl', 'registration_url', 'registrationDocument',
+        ],
+        'MOT':               [
+          'motUrl', 'mot_url', 'motImageUrl', 'mot_image_url',
+          'motDocument', 'motDocumentUrl',
+        ],
+      };
+
+      // Also check a generic "documents" array if the API returns one
+      // e.g. { "documents": [{ "documentType": "DrivingLicense", "url": "..." }] }
+      final docsArray = profile['documents'] ?? profile['uploadedDocuments'];
+      if (docsArray is List) {
+        for (final doc in docsArray) {
+          if (doc is Map<String, dynamic>) {
+            final type = (doc['documentType'] ?? doc['type'] ?? '').toString();
+            final url  = (doc['url'] ?? doc['fileUrl'] ?? doc['documentUrl'] ?? '').toString();
+            if (type.isNotEmpty && url.isNotEmpty) {
+              // Match to one of our apiKeys (case-insensitive)
+              for (final apiKey in fieldMap.keys) {
+                if (type.toLowerCase() == apiKey.toLowerCase()) {
+                  if (mounted) setState(() => _uploaded.add(apiKey));
+                  debugPrint('[Documents]  Found from documents array: $apiKey');
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Check individual URL fields
+      for (final entry in fieldMap.entries) {
+        final apiKey = entry.key;
+        for (final field in entry.value) {
+          final val = profile[field]?.toString() ?? '';
+          if (val.isNotEmpty && val != 'null') {
+            if (mounted) setState(() => _uploaded.add(apiKey));
+            debugPrint('[Documents]  Found from field "$field": $apiKey');
+            break;
+          }
+        }
+      }
+
+      // Persist whatever the server told us
+      if (_driverId != null) await _saveToPrefs(_driverId!);
+
+    } catch (e) {
+      debugPrint('[Documents] server doc status fetch error: $e');
+    }
+  }
+
+  // ── Photo picker — bytes only, no File() ─────────────────────────────
   Future<Uint8List?> _pickImageBytes(ImageSource source) async {
     try {
       final xfile = await _picker.pickImage(
-        source:       source,
-        maxWidth:     2048,
-        maxHeight:    2048,
-        imageQuality: 90,
+        source: source, maxWidth: 2048, maxHeight: 2048, imageQuality: 90,
       );
       if (xfile == null) return null;
       return await xfile.readAsBytes();
@@ -95,19 +207,9 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────
-  //  Source chooser — FIXED
-  //
-  //  OLD BUG: used a local `result` variable that was assigned inside the
-  //  sheet's onTap callbacks. The sheet closed first (Navigator.pop), then
-  //  _pickImageBytes ran, but by then showModalBottomSheet had already
-  //  returned — so the assignment to `result` was never seen by the caller.
-  //
-  //  FIX: pick the image BEFORE closing the sheet. Pass the bytes to
-  //  Navigator.pop(ctx, bytes) as the sheet's return value. The outer
-  //  await showModalBottomSheet<Uint8List?>(...) then receives those bytes
-  //  directly. No race condition, no lost result.
-  // ─────────────────────────────────────────────────────────────────────
+  // ── Source chooser ────────────────────────────────────────────────────
+  // IMPORTANT: pick bytes BEFORE calling Navigator.pop so the bytes are
+  // returned as the sheet's result. Never pop first then pick.
   Future<Uint8List?> _chooseSource() async {
     return showModalBottomSheet<Uint8List?>(
       context: context,
@@ -121,8 +223,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               width: 40, height: 4,
               margin: const EdgeInsets.only(bottom: 16),
               decoration: BoxDecoration(
-                  color: AppColors.border,
-                  borderRadius: BorderRadius.circular(2)),
+                  color: AppColors.border, borderRadius: BorderRadius.circular(2)),
             ),
             const Padding(
               padding: EdgeInsets.only(bottom: 8),
@@ -131,8 +232,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary)),
             ),
-
-            // Camera option
             ListTile(
               leading: Container(
                 padding: const EdgeInsets.all(8),
@@ -145,16 +244,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Use your camera'),
               onTap: () async {
-                // Pick FIRST, then pop with the bytes as the return value.
-                // This is the correct pattern — do not pop before picking.
                 final bytes = await _pickImageBytes(ImageSource.camera);
                 if (ctx.mounted) Navigator.pop(ctx, bytes);
               },
             ),
-
             const Divider(indent: 16, endIndent: 16),
-
-            // Gallery option
             ListTile(
               leading: Container(
                 padding: const EdgeInsets.all(8),
@@ -167,15 +261,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                   style: TextStyle(fontWeight: FontWeight.w600)),
               subtitle: const Text('Pick an existing photo'),
               onTap: () async {
-                // Same pattern: pick first, then pop with bytes.
                 final bytes = await _pickImageBytes(ImageSource.gallery);
                 if (ctx.mounted) Navigator.pop(ctx, bytes);
               },
             ),
-
             const SizedBox(height: 8),
-
-            // Cancel
             TextButton(
               onPressed: () => Navigator.pop(ctx, null),
               child: const Text('Cancel',
@@ -188,17 +278,15 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     );
   }
 
-  // ── Upload handler ────────────────────────────────────────────────────
+  // ── Upload ────────────────────────────────────────────────────────────
   Future<void> _upload(_DocType doc) async {
     if (_driverId == null || _driverId!.isEmpty) {
-      _snack('Driver ID not found. Please log out and log back in.',
-          isError: true);
+      _snack('Driver ID not found. Please log out and log back in.', isError: true);
       return;
     }
 
-    // Show source chooser — bytes come back as the sheet's return value.
     final Uint8List? bytes = await _chooseSource();
-    if (bytes == null || bytes.isEmpty) return; // user cancelled or pick failed
+    if (bytes == null || bytes.isEmpty) return;
 
     setState(() => _uploading.add(doc.apiKey));
 
@@ -227,10 +315,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
     if (result.success) {
       setState(() => _uploaded.add(doc.apiKey));
-      _snack('${doc.label} uploaded successfully ✅');
+      // Persist so it survives re-login (SharedPreferences layer)
+      await _saveToPrefs(_driverId!);
+      _snack('${doc.label} uploaded successfully');
     } else {
-      _snack(result.message ?? 'Upload failed. Please try again.',
-          isError: true);
+      _snack(result.message ?? 'Upload failed. Please try again.', isError: true);
     }
   }
 
@@ -243,7 +332,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     ));
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -257,27 +345,24 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
       body: _loadingDriverId
           ? const Center(child: CircularProgressIndicator())
           : _driverId == null
-              ? _NoDriverId(onRetry: _loadDriverId)
+              ? _NoDriverId(onRetry: _loadDriverIdAndDocuments)
               : SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
 
-                      // Info banner
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
                           color: AppColors.primary.withOpacity(0.07),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                              color: AppColors.primary.withOpacity(0.2)),
+                          border: Border.all(color: AppColors.primary.withOpacity(0.2)),
                         ),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Icon(Icons.info_outline,
-                                color: AppColors.primary, size: 20),
+                            const Icon(Icons.info_outline, color: AppColors.primary, size: 20),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
@@ -300,7 +385,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                               color: AppColors.textPrimary)),
                       const SizedBox(height: 12),
 
-                      // Document cards
                       ..._docTypes.map((doc) => _DocumentCard(
                             doc:         doc,
                             isUploading: _uploading.contains(doc.apiKey),
@@ -312,8 +396,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
                       Center(
                         child: Text(
                           'Documents are reviewed within 1–2 business days.',
-                          style: TextStyle(
-                              fontSize: 12, color: AppColors.textHint),
+                          style: TextStyle(fontSize: 12, color: AppColors.textHint),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -326,7 +409,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 }
 
 // ─────────────────────────────────────────────────────────
-//  Document Card widget
+//  Document Card
 // ─────────────────────────────────────────────────────────
 class _DocumentCard extends StatelessWidget {
   final _DocType     doc;
@@ -351,58 +434,45 @@ class _DocumentCard extends StatelessWidget {
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isUploaded
-              ? AppColors.success.withOpacity(0.5)
-              : AppColors.border,
+          color: isUploaded ? AppColors.success.withOpacity(0.5) : AppColors.border,
           width: isUploaded ? 1.5 : 1,
         ),
         boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 6,
-              offset: const Offset(0, 2))
+          BoxShadow(color: Colors.black.withOpacity(0.04),
+              blurRadius: 6, offset: const Offset(0, 2))
         ],
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(children: [
 
-          // Icon
           Container(
             width: 52, height: 52,
             decoration: BoxDecoration(
               color: accent.withOpacity(0.1),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(
-              isUploaded ? Icons.check_circle : doc.icon,
-              color: accent,
-              size: 26,
-            ),
+            child: Icon(isUploaded ? Icons.check_circle : doc.icon,
+                color: accent, size: 26),
           ),
           const SizedBox(width: 14),
 
-          // Text
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(doc.label,
-                  style: const TextStyle(
-                      fontSize: 15,
+                  style: const TextStyle(fontSize: 15,
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary)),
               const SizedBox(height: 3),
               Text(doc.hint,
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.textSecondary)),
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
               if (isUploaded) ...[
                 const SizedBox(height: 4),
                 Row(children: [
-                  const Icon(Icons.check_circle,
-                      size: 13, color: AppColors.success),
+                  const Icon(Icons.check_circle, size: 13, color: AppColors.success),
                   const SizedBox(width: 4),
                   const Text('Uploaded successfully',
-                      style: TextStyle(
-                          fontSize: 11,
+                      style: TextStyle(fontSize: 11,
                           color: AppColors.success,
                           fontWeight: FontWeight.w600)),
                 ]),
@@ -411,27 +481,22 @@ class _DocumentCard extends StatelessWidget {
           ),
           const SizedBox(width: 12),
 
-          // Button / spinner
           isUploading
-              ? const SizedBox(
-                  width: 36, height: 36,
+              ? const SizedBox(width: 36, height: 36,
                   child: CircularProgressIndicator(strokeWidth: 2.5))
               : SizedBox(
                   height: 40,
                   child: ElevatedButton(
                     onPressed: onUpload,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor:
-                          isUploaded ? AppColors.success : AppColors.primary,
+                      backgroundColor: isUploaded ? AppColors.success : AppColors.primary,
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10)),
                       padding: const EdgeInsets.symmetric(horizontal: 14),
                     ),
-                    child: Text(
-                      isUploaded ? 'Replace' : 'Upload',
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600),
-                    ),
+                    child: Text(isUploaded ? 'Replace' : 'Upload',
+                        style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
                   ),
                 ),
         ]),
@@ -458,8 +523,7 @@ class _NoDriverId extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
             const SizedBox(height: 8),
-            const Text(
-                'Please log out and log back in to refresh your profile.',
+            const Text('Please log out and log back in to refresh your profile.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: AppColors.textHint)),
             const SizedBox(height: 24),

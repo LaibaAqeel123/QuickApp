@@ -7,7 +7,19 @@ import 'package:food_delivery_app/presentation/buyer/screens/order_history_scree
 import 'package:food_delivery_app/presentation/buyer/screens/buyer_profile_screen.dart';
 
 class BuyerMainScreen extends StatefulWidget {
-  const BuyerMainScreen({super.key});
+  // ══════════════════════════════════════════════════════
+  //  reloadCart flag
+  //
+  //  FIX: When navigating here after a successful payment,
+  //  PaymentSuccessScreen passes reloadCart=true.
+  //  BuyerMainScreen uses this to call CartScreen.reload()
+  //  immediately after the first frame renders, guaranteeing
+  //  the cart shows as empty even if the clearCartApi() call
+  //  was still in progress during navigation.
+  // ══════════════════════════════════════════════════════
+  final bool reloadCart;
+
+  const BuyerMainScreen({super.key, this.reloadCart = false});
 
   static const String routeName = '/buyer-main';
 
@@ -20,7 +32,26 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
 
   final _cartKey = GlobalKey<CartScreenState>();
 
-  /// Switch to a tab by index. Reloads cart when switching to tab 2.
+  @override
+  void initState() {
+    super.initState();
+
+    // ── Reload cart on first frame if flagged ──────────
+    // This handles the case where we just completed payment.
+    // We post a frame callback so the CartScreen widget is
+    // fully built before we call reload() on it.
+    if (widget.reloadCart) {
+      debugPrint('🛒 [BuyerMain] reloadCart=true — '
+          'scheduling CartScreen.reload() after first frame');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _cartKey.currentState?.reload();
+        debugPrint('🛒 [BuyerMain] CartScreen.reload() called');
+      });
+    }
+  }
+
+  /// Switch to a tab by index.
+  /// Always reloads cart when switching to tab 2 (Cart).
   void switchTab(int index) {
     if (!mounted) return;
     setState(() => _currentIndex = index);
@@ -41,24 +72,22 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
             Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => BrowseScreen(
                 initialSearch: searchQuery,
-                onViewCart: () => switchTab(2), // ← wired
+                onViewCart:    () => switchTab(2),
               ),
             ));
           } else {
             switchTab(1);
           }
         },
-        onViewCart: () => switchTab(2), // ← wired for featured products on home
+        onViewCart: () => switchTab(2),
       ),
 
       // ── Browse ────────────────────────────────────────
-      BrowseScreen(
-        onViewCart: () => switchTab(2), // ← wired
-      ),
+      BrowseScreen(onViewCart: () => switchTab(2)),
 
       // ── Cart ──────────────────────────────────────────
       CartScreen(
-        key: _cartKey,
+        key:        _cartKey,
         onBrowseTap: () => switchTab(1),
       ),
 
@@ -73,10 +102,13 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
       body: IndexedStack(index: _currentIndex, children: screens),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10, offset: const Offset(0, -5),
-          )],
+          boxShadow: [
+            BoxShadow(
+              color:      Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset:     const Offset(0, -5),
+            ),
+          ],
         ),
         child: BottomNavigationBar(
           currentIndex:        _currentIndex,
@@ -88,29 +120,29 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
           unselectedFontSize:  12,
           items: const [
             BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined),
+              icon:       Icon(Icons.home_outlined),
               activeIcon: Icon(Icons.home),
-              label: 'Home',
+              label:      'Home',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.search),
+              icon:       Icon(Icons.search),
               activeIcon: Icon(Icons.search),
-              label: 'Browse',
+              label:      'Browse',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.shopping_cart_outlined),
+              icon:       Icon(Icons.shopping_cart_outlined),
               activeIcon: Icon(Icons.shopping_cart),
-              label: 'Cart',
+              label:      'Cart',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.receipt_long_outlined),
+              icon:       Icon(Icons.receipt_long_outlined),
               activeIcon: Icon(Icons.receipt_long),
-              label: 'Orders',
+              label:      'Orders',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
+              icon:       Icon(Icons.person_outline),
               activeIcon: Icon(Icons.person),
-              label: 'Profile',
+              label:      'Profile',
             ),
           ],
         ),
