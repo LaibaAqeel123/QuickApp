@@ -35,7 +35,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   bool _isFetchingRoute = false;
 
   HubConnection? _hubConnection;
-  bool _isConnected = false;
+  bool _isConnected    = false;
   bool _isDriverEnRoute = false;
 
   Timer? _pollTimer;
@@ -110,9 +110,61 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     return 'Processing';
   }
 
-  String get _supplierName =>
-      (_src['supplierName'] ?? _src['supplier']?['name'] ?? 'Supplier')
-          .toString();
+  // ══════════════════════════════════════════════════════
+  //  SUPPLIER NAME — fixed
+  //
+  //  The order detail API response does NOT have a top-level
+  //  supplierName field. The supplier name lives inside:
+  //    items[0].supplierName   (confirmed from your logs)
+  //
+  //  Search order:
+  //  1. _src['supplierName']              – top-level (future-proof)
+  //  2. _src['supplier']['name']          – nested object
+  //  3. _src['items'][0]['supplierName']  – first item (your case)
+  //  4. _src['orderItems'][0]['supplierName']
+  //  5. _src['vendor']
+  //  6. 'Supplier'                        – final fallback
+  // ══════════════════════════════════════════════════════
+  String get _supplierName {
+    // 1. Top-level supplierName
+    final top = _src['supplierName']?.toString() ?? '';
+    if (top.isNotEmpty) return top;
+
+    // 2. Nested supplier object
+    final supplierObj = _src['supplier'];
+    if (supplierObj is Map) {
+      final n = supplierObj['name']?.toString() ?? '';
+      if (n.isNotEmpty) return n;
+    }
+
+    // 3 & 4. First item's supplierName (confirmed in logs)
+    for (final key in ['items', 'orderItems']) {
+      final list = _src[key];
+      if (list is List && list.isNotEmpty) {
+        final firstItem = list.first;
+        if (firstItem is Map) {
+          final n = firstItem['supplierName']?.toString() ?? '';
+          if (n.isNotEmpty) {
+            debugPrint('🏪 [supplierName] found in $key[0].supplierName: $n');
+            return n;
+          }
+          // Also check nested supplier object inside item
+          final itemSupplier = firstItem['supplier'];
+          if (itemSupplier is Map) {
+            final ns = itemSupplier['name']?.toString() ?? '';
+            if (ns.isNotEmpty) return ns;
+          }
+        }
+      }
+    }
+
+    // 5. vendor field
+    final vendor = _src['vendor']?.toString() ?? '';
+    if (vendor.isNotEmpty) return vendor;
+
+    // 6. Fallback
+    return 'Supplier';
+  }
 
   // ── Extract full item list from order ────────────────
   List<Map<String, dynamic>> get _orderItems {
@@ -435,14 +487,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
             'https://api.neptasolutions.co.uk/hubs/delivery-tracking'
             '?access_token=$token',
             options: HttpConnectionOptions(
-              transport:        transport,
-              skipNegotiation:  skipNegotiation,
+              transport:       transport,
+              skipNegotiation: skipNegotiation,
             ),
           )
           .withAutomaticReconnect()
           .build();
-      hub.serverTimeoutInMilliseconds      = 30000;
-      hub.keepAliveIntervalInMilliseconds  = 15000;
+      hub.serverTimeoutInMilliseconds     = 30000;
+      hub.keepAliveIntervalInMilliseconds = 15000;
       _registerHubListeners(hub);
       hub.onreconnected(({connectionId}) => _resubscribe(hub!, delivId));
       hub.onclose(({error}) {
@@ -486,7 +538,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         (_driverLocation!.longitude + _deliveryLocation!.longitude) / 2,
       );
     }
-    if (_driverLocation  != null) return _driverLocation!;
+    if (_driverLocation   != null) return _driverLocation!;
     if (_deliveryLocation != null) return _deliveryLocation!;
     return const LatLng(31.5204, 74.3587);
   }
@@ -513,7 +565,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     }
   }
 
-  // ── Map widget ──────────────────────────────────────
   Widget _buildMap({bool fullScreen = false}) {
     final height = fullScreen ? MediaQuery.of(context).size.height : 300.0;
     return SizedBox(
@@ -560,9 +611,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       child: const Icon(Icons.home,
                           color: Colors.white, size: 24),
                     ),
-                    Container(
-                        width: 3, height: 10,
-                        color: AppColors.success),
+                    Container(width: 3, height: 10, color: AppColors.success),
                   ]),
                 ),
               if (_driverLocation != null)
@@ -575,7 +624,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       alignment: Alignment.center,
                       children: [
                         Container(
-                          width: 60 * _pulseAnimation.value,
+                          width:  60 * _pulseAnimation.value,
                           height: 60 * _pulseAnimation.value,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
@@ -700,9 +749,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                 Container(
                   width: 40, height: 2,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(colors: [
-                      AppColors.primary, AppColors.success,
-                    ]),
+                    gradient: LinearGradient(
+                        colors: [AppColors.primary, AppColors.success]),
                     borderRadius: BorderRadius.circular(1),
                   ),
                 ),
@@ -749,15 +797,12 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation:       0,
-      
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Icon(Icons.circle,
                 size: 12,
-                color: _isConnected
-                    ? Colors.greenAccent
-                    : Colors.grey),
+                color: _isConnected ? Colors.greenAccent : Colors.grey),
           ),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
         ],
@@ -786,11 +831,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         const Icon(Icons.warning_amber_rounded,
                             color: AppColors.error, size: 20),
                         const SizedBox(width: 8),
-                        Expanded(
-                            child: Text(_error!,
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    color: AppColors.error))),
+                        Expanded(child: Text(_error!,
+                            style: const TextStyle(
+                                fontSize: 13, color: AppColors.error))),
                       ]),
                     ),
 
@@ -819,8 +862,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                               color: AppColors.primary, size: 20),
                         ),
                         const SizedBox(width: 12),
-                        Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                        Column(crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                           const Text('Estimated Arrival',
                               style: TextStyle(
@@ -853,8 +895,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       borderRadius: BorderRadius.circular(16),
                       child: _isDriverEnRoute
                           ? _buildMap()
-                          : _MapPlaceholder(
-                              statusLabel: _statusLabel),
+                          : _MapPlaceholder(statusLabel: _statusLabel),
                     ),
                   ),
 
@@ -866,8 +907,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                   // Order Status steps
                   Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                       const Text('Order Status',
                           style: TextStyle(
@@ -881,14 +921,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                               '${_fmtDate(_src['createdAt'] ?? _src['date'])} • '
                               '${_fmtTime(_src['createdAt'] ?? _src['date'])}',
                           completed: true,
-                          active:    false,
-                          icon:      Icons.check_circle),
+                          active: false,
+                          icon: Icons.check_circle),
                       _Step(
                           title:    'Order Confirmed',
                           subtitle: 'Confirmed by supplier',
                           completed: _isAtLeast('processing'),
-                          active:    false,
-                          icon:      Icons.verified),
+                          active: false,
+                          icon: Icons.verified),
                       _Step(
                           title: _statusLabel.toLowerCase() == 'processing'
                               ? 'Preparing Order'
@@ -896,26 +936,24 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                           subtitle:  'Being prepared by supplier',
                           completed: _isAtLeast('out for delivery'),
                           active:    _statusLabel.toLowerCase() == 'processing',
-                          icon:      Icons.inventory_2),
+                          icon: Icons.inventory_2),
                       _Step(
                           title:    'Out for Delivery',
                           subtitle: 'Driver is on the way',
                           completed: _statusLabel.toLowerCase() == 'delivered',
                           active:    _statusLabel.toLowerCase() == 'out for delivery',
-                          icon:      Icons.local_shipping),
+                          icon: Icons.local_shipping),
                       _Step(
                           title:    'Delivered',
                           subtitle: 'Order has been delivered',
                           completed: _statusLabel.toLowerCase() == 'delivered',
-                          active:    false,
-                          icon:      Icons.check_circle,
-                          isLast:    true),
+                          active: false,
+                          icon: Icons.check_circle,
+                          isLast: true),
                     ]),
                   ),
 
-                  // ══════════════════════════════════════
-                  //  ORDER DETAILS — full item breakdown
-                  // ══════════════════════════════════════
+                  // ── Order Details card ─────────────────
                   Container(
                     margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     padding: const EdgeInsets.all(16),
@@ -931,11 +969,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         ),
                       ],
                     ),
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
 
-                      // Header row
+                      // Header row with optional Raise Dispute button
                       Row(children: [
                         const Icon(Icons.receipt_long,
                             color: AppColors.primary, size: 20),
@@ -946,7 +983,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                                 fontWeight: FontWeight.bold,
                                 color: AppColors.textPrimary)),
                         const Spacer(),
-                        // Raise Dispute (only on delivered orders)
                         if (isDelivered)
                           GestureDetector(
                             onTap: () => Navigator.push(
@@ -971,8 +1007,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                 Icon(Icons.gavel,
-                                    size: 14,
-                                    color: AppColors.warning),
+                                    size: 14, color: AppColors.warning),
                                 SizedBox(width: 4),
                                 Text('Raise Dispute',
                                     style: TextStyle(
@@ -985,7 +1020,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       ]),
                       const SizedBox(height: 14),
 
-                      // Order meta
+                      // Order meta rows
                       _DRow(
                           icon:  Icons.tag,
                           label: 'Order ID',
@@ -993,6 +1028,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                               ? _orderNumber
                               : _orderId),
                       const SizedBox(height: 10),
+                      // ── Supplier name (fixed) ──────────
                       _DRow(
                           icon:  Icons.store,
                           label: 'Supplier',
@@ -1006,7 +1042,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       ],
                       const SizedBox(height: 16),
 
-                      // ── Items section ─────────────────
+                      // Items section
                       if (_orderItems.isNotEmpty) ...[
                         const Text('Items Ordered',
                             style: TextStyle(
@@ -1028,7 +1064,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         const SizedBox(height: 10),
                       ],
 
-                      // ── Price breakdown ────────────────
+                      // Price breakdown
                       const Text('Price Breakdown',
                           style: TextStyle(
                               fontSize: 14,
@@ -1053,10 +1089,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       ],
                       const Divider(height: 16),
                       _PriceRow(
-                        label:   'Total',
-                        value:   '£${_total.toStringAsFixed(2)}',
-                        isBold:  true,
-                        color:   AppColors.primary,
+                        label:  'Total',
+                        value:  '£${_total.toStringAsFixed(2)}',
+                        isBold: true,
+                        color:  AppColors.primary,
                       ),
                     ]),
                   ),
@@ -1069,7 +1105,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   }
 }
 
-// ── Item row — name, qty, unit price, subtotal ──────────
+// ── Item row ─────────────────────────────────────────────
 class _ItemRow extends StatelessWidget {
   final Map<String, dynamic> item;
   const _ItemRow({required this.item});
@@ -1081,14 +1117,15 @@ class _ItemRow extends StatelessWidget {
             item['product']?['name'] ??
             'Item')
         .toString();
-    final qty  = ((item['quantity'] ?? 1) as num).toInt();
+    final qty       = ((item['quantity'] ?? 1) as num).toInt();
     final unitPrice = ((item['unitPrice'] ??
                 item['price'] ??
                 item['product']?['price'] ??
                 0) as num)
         .toDouble();
-    final subtotal   = qty * unitPrice;
-    final imgUrl     = item['imageUrl']?.toString() ??
+    final subtotal    = qty * unitPrice;
+    final imgUrl      = item['imageUrl']?.toString() ??
+        item['productImage']?.toString() ??
         item['product']?['imageUrl']?.toString() ??
         item['image']?.toString();
     final specialNote =
@@ -1105,30 +1142,15 @@ class _ItemRow extends StatelessWidget {
               imgUrl,
               width: 52, height: 52,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                width: 52, height: 52,
-                decoration: BoxDecoration(
-                    color: AppColors.surfaceLight,
-                    borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.image_not_supported,
-                    color: AppColors.textHint, size: 24),
-              ),
+              errorBuilder: (_, __, ___) => _itemIconBox(),
             ),
           )
         else
-          Container(
-            width: 52, height: 52,
-            decoration: BoxDecoration(
-                color: AppColors.surfaceLight,
-                borderRadius: BorderRadius.circular(8)),
-            child: const Icon(Icons.shopping_basket,
-                color: AppColors.textHint, size: 22),
-          ),
+          _itemIconBox(),
         const SizedBox(width: 12),
 
         // Name + note + qty
-        Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
           Text(name,
               style: const TextStyle(
@@ -1166,61 +1188,70 @@ class _ItemRow extends StatelessWidget {
       ]),
     );
   }
+
+  Widget _itemIconBox() => Container(
+    width: 52, height: 52,
+    decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(8)),
+    child: const Icon(Icons.shopping_basket,
+        color: AppColors.textHint, size: 22),
+  );
 }
 
-// ── Price breakdown row ─────────────────────────────────
+// ── Price row ─────────────────────────────────────────────
 class _PriceRow extends StatelessWidget {
-  final String  label, value;
-  final bool    isBold;
-  final Color?  color;
+  final String title, value;
+  final bool   isBold;
+  final Color? color;
+
+  // Allow both named-positional (label/value) and original (title/value) patterns
   const _PriceRow({
-    required this.label,
+    String? label,
+    String? title,
     required this.value,
     this.isBold = false,
     this.color,
-  });
+  })  : title = label ?? title ?? '';
 
   @override
   Widget build(BuildContext context) => Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label,
+          Text(title,
               style: TextStyle(
                   fontSize: isBold ? 15 : 13,
-                  fontWeight:
-                      isBold ? FontWeight.bold : FontWeight.normal,
+                  fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
                   color: AppColors.textPrimary)),
           Text(value,
               style: TextStyle(
                   fontSize: isBold ? 17 : 13,
-                  fontWeight:
-                      isBold ? FontWeight.bold : FontWeight.w600,
-                  color:
-                      color ?? AppColors.textPrimary)),
+                  fontWeight: isBold ? FontWeight.bold : FontWeight.w600,
+                  color: color ?? AppColors.textPrimary)),
         ],
       );
 }
 
-// ── Supporting widgets (unchanged from original) ────────
+// ── Map placeholder ────────────────────────────────────────
 class _MapPlaceholder extends StatelessWidget {
   final String statusLabel;
   const _MapPlaceholder({required this.statusLabel});
 
   String get _message {
     switch (statusLabel.toLowerCase()) {
-      case 'processing':  return 'Order is being prepared';
-      case 'delivered':   return 'Order has been delivered';
-      case 'cancelled':   return 'Order was cancelled';
-      default:            return 'Waiting for driver pickup...';
+      case 'processing': return 'Order is being prepared';
+      case 'delivered':  return 'Order has been delivered';
+      case 'cancelled':  return 'Order was cancelled';
+      default:           return 'Waiting for driver pickup...';
     }
   }
 
   IconData get _icon {
     switch (statusLabel.toLowerCase()) {
-      case 'processing':  return Icons.inventory_2_outlined;
-      case 'delivered':   return Icons.check_circle_outline;
-      case 'cancelled':   return Icons.cancel_outlined;
-      default:            return Icons.local_shipping_outlined;
+      case 'processing': return Icons.inventory_2_outlined;
+      case 'delivered':  return Icons.check_circle_outline;
+      case 'cancelled':  return Icons.cancel_outlined;
+      default:           return Icons.local_shipping_outlined;
     }
   }
 
@@ -1230,8 +1261,7 @@ class _MapPlaceholder extends StatelessWidget {
         child: Container(
           color: AppColors.surfaceLight,
           child: Center(
-            child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+            child: Column(mainAxisAlignment: MainAxisAlignment.center,
                 children: [
               Icon(_icon, size: 60, color: AppColors.primary),
               const SizedBox(height: 12),
@@ -1242,8 +1272,7 @@ class _MapPlaceholder extends StatelessWidget {
               const SizedBox(height: 6),
               const Text(
                 'Live tracking starts when\ndriver picks up your order',
-                style: TextStyle(
-                    fontSize: 12, color: AppColors.textHint),
+                style: TextStyle(fontSize: 12, color: AppColors.textHint),
                 textAlign: TextAlign.center,
               ),
             ]),
@@ -1252,6 +1281,7 @@ class _MapPlaceholder extends StatelessWidget {
       );
 }
 
+// ── Driver card ────────────────────────────────────────────
 class _DriverCard extends StatelessWidget {
   final Map<String, dynamic>? driver;
   const _DriverCard({required this.driver});
@@ -1265,7 +1295,7 @@ class _DriverCard extends StatelessWidget {
     final plate   = (driver?['licensePlate'] ?? driver?['plate'] ?? '').toString();
 
     return Container(
-      margin:  const EdgeInsets.all(16),
+      margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
           color:        AppColors.surface,
@@ -1277,41 +1307,37 @@ class _DriverCard extends StatelessWidget {
           decoration: BoxDecoration(
               color: AppColors.primary.withOpacity(0.1),
               shape: BoxShape.circle),
-          child: const Icon(Icons.person,
-              size: 30, color: AppColors.primary),
+          child: const Icon(Icons.person, size: 30, color: AppColors.primary),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-            Text(name,
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Text(name,
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 4),
+          Row(children: [
+            const Icon(Icons.star, size: 13, color: AppColors.warning),
+            const SizedBox(width: 4),
+            Text(trips.isNotEmpty
+                    ? '$rating ($trips deliveries)'
+                    : rating,
                 style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 4),
-            Row(children: [
-              const Icon(Icons.star, size: 13, color: AppColors.warning),
-              const SizedBox(width: 4),
-              Text(trips.isNotEmpty
-                      ? '$rating ($trips deliveries)'
-                      : rating,
-                  style: const TextStyle(
-                      fontSize: 12, color: AppColors.textSecondary)),
-            ]),
-            const SizedBox(height: 4),
-            Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
-                style: const TextStyle(
-                    fontSize: 11, color: AppColors.textHint)),
+                    fontSize: 12, color: AppColors.textSecondary)),
           ]),
-        ),
+          const SizedBox(height: 4),
+          Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
+              style: const TextStyle(
+                  fontSize: 11, color: AppColors.textHint)),
+        ])),
         IconButton(
-          icon:     const Icon(Icons.phone, color: AppColors.primary),
+          icon:      const Icon(Icons.phone, color: AppColors.primary),
           onPressed: () {},
-          style: IconButton.styleFrom(
+          style:     IconButton.styleFrom(
               backgroundColor: AppColors.primary.withOpacity(0.1)),
         ),
       ]),
@@ -1319,6 +1345,7 @@ class _DriverCard extends StatelessWidget {
   }
 }
 
+// ── Status step ────────────────────────────────────────────
 class _Step extends StatelessWidget {
   final String   title, subtitle;
   final bool     completed, active, isLast;
@@ -1336,9 +1363,9 @@ class _Step extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Color c;
-    if (completed)    c = AppColors.success;
-    else if (active)  c = AppColors.primary;
-    else              c = AppColors.textHint;
+    if (completed)   c = AppColors.success;
+    else if (active) c = AppColors.primary;
+    else             c = AppColors.textHint;
 
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Column(children: [
@@ -1356,36 +1383,31 @@ class _Step extends StatelessWidget {
         if (!isLast)
           Container(
               width: 2, height: 50,
-              color: completed
-                  ? AppColors.success
-                  : AppColors.border),
+              color: completed ? AppColors.success : AppColors.border),
       ]),
       const SizedBox(width: 12),
-      Expanded(
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 8, top: 6),
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-            Text(title,
-                style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: (active || completed)
-                        ? AppColors.textPrimary
-                        : AppColors.textSecondary)),
-            const SizedBox(height: 3),
-            Text(subtitle,
-                style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary)),
-          ]),
-        ),
-      ),
+      Expanded(child: Padding(
+        padding: const EdgeInsets.only(bottom: 8, top: 6),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Text(title,
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: (active || completed)
+                      ? AppColors.textPrimary
+                      : AppColors.textSecondary)),
+          const SizedBox(height: 3),
+          Text(subtitle,
+              style: const TextStyle(
+                  fontSize: 12, color: AppColors.textSecondary)),
+        ]),
+      )),
     ]);
   }
 }
 
+// ── Detail row ─────────────────────────────────────────────
 class _DRow extends StatelessWidget {
   final IconData icon;
   final String   label, value;
