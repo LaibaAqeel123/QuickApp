@@ -749,6 +749,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation:       0,
+      
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),

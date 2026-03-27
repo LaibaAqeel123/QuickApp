@@ -9,6 +9,13 @@ const int _kStatusOutForDelivery = 2;
 const int _kStatusDelivered      = 3;
 const int _kStatusCancelled      = 4;
 
+// ── Payment status constants ────────────────────────────
+const int _kPayPending   = 1;
+const int _kPayCompleted = 2;
+const int _kPayFailed    = 3;
+const int _kPayCancelled = 4;
+const int _kPayRefunded  = 5;
+
 class OrderHistoryScreen extends StatefulWidget {
   const OrderHistoryScreen({super.key});
 
@@ -25,7 +32,11 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool    _isLoading = true;
   String? _error;
 
+  // Delivery status cache: orderId → raw status string
   final Map<String, String> _deliveryStatusCache = {};
+
+  // Payment status cache: orderId → payment status int (1-5)
+  final Map<String, int> _paymentStatusCache = {};
 
   @override
   void initState() {
@@ -40,7 +51,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     super.dispose();
   }
 
-  // ── Status resolution ───────────────────────────────
+  // ── Order status helpers ────────────────────────────
   String _statusLabel(Map<String, dynamic> o) {
     final oid    = _orderId(o);
     final cached = (_deliveryStatusCache[oid] ?? '').toLowerCase().trim();
@@ -85,6 +96,51 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 
   bool _isCompleted(Map<String, dynamic> o) =>
       _statusLabel(o).toLowerCase() == 'delivered';
+
+  // ── Payment status helpers ──────────────────────────
+  int? _paymentStatus(String orderId) => _paymentStatusCache[orderId];
+
+  /// Returns label, color, and icon for a payment status int.
+  ({String label, Color color, IconData icon}) _paymentInfo(int status) {
+    switch (status) {
+      case _kPayPending:
+        return (
+          label: 'Pending',
+          color: const Color(0xFFF59E0B),   // amber
+          icon:  Icons.hourglass_empty,
+        );
+      case _kPayCompleted:
+        return (
+          label: 'Paid',
+          color: AppColors.success,
+          icon:  Icons.check_circle_outline,
+        );
+      case _kPayFailed:
+        return (
+          label: 'Failed',
+          color: AppColors.error,
+          icon:  Icons.error_outline,
+        );
+      case _kPayCancelled:
+        return (
+          label: 'Cancelled',
+          color: AppColors.textSecondary,
+          icon:  Icons.cancel_outlined,
+        );
+      case _kPayRefunded:
+        return (
+          label: 'Refunded',
+          color: const Color(0xFF3B82F6),   // blue
+          icon:  Icons.reply_outlined,
+        );
+      default:
+        return (
+          label: 'Unknown',
+          color: AppColors.textHint,
+          icon:  Icons.help_outline,
+        );
+    }
+  }
 
   // ── Field helpers ───────────────────────────────────
   String _orderId(Map<String, dynamic> o) =>
@@ -134,6 +190,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     if (!mounted) return;
     setState(() { _isLoading = true; _error = null; });
     _deliveryStatusCache.clear();
+    _paymentStatusCache.clear();
 
     final futures = await Future.wait([
       AuthService.instance.getMyOrders(status: _kStatusProcessing,     pageSize: 50),
@@ -162,6 +219,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       if (id.isNotEmpty && seen.add(id)) dedup.add(o);
     }
 
+    // Pre-populate obvious delivered statuses from order data
     for (final o in dedup) {
       final raw = o['status'] ?? o['orderStatus'];
       final oid = _orderId(o);
@@ -178,9 +236,14 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       _error     = dedup.isEmpty ? err : null;
     });
 
-    await _enrichDeliveryStatuses(dedup);
+    // Enrich with delivery AND payment statuses in parallel
+    await Future.wait([
+      _enrichDeliveryStatuses(dedup),
+      _enrichPaymentStatuses(dedup),
+    ]);
   }
 
+  // ── Delivery status enrichment ───────────────────────
   Future<void> _enrichDeliveryStatuses(
       List<Map<String, dynamic>> orders) async {
     final toCheck = orders.where((o) {
@@ -199,7 +262,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       final batch = toCheck.skip(i).take(5).toList();
       await Future.wait(batch.map(_fetchDeliveryStatus));
     }
-
     if (mounted) setState(() {});
   }
 
@@ -217,7 +279,63 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
         if (rawStatus.isEmpty || rawStatus == 'failed') return;
         if (mounted) setState(() => _deliveryStatusCache[oid] = rawStatus);
       }
-    } catch (e) { debugPrint('⚠️ enrich $oid: $e'); }
+    } catch (e) { debugPrint('⚠️ delivery enrich $oid: $e'); }
+  }
+
+  // ── Payment status enrichment ─────────────────────────
+  // Fetches GET /api/payments/order/{orderId} for every order
+  // in batches of 5 to avoid hammering the API.
+  Future<void> _enrichPaymentStatuses(
+      List<Map<String, dynamic>> orders) async {
+    // Only fetch for orders that have an id
+    final toFetch = orders
+        .where((o) => _orderId(o).isNotEmpty)
+        .toList();
+
+    for (int i = 0; i < toFetch.length; i += 5) {
+      final batch = toFetch.skip(i).take(5).toList();
+      await Future.wait(batch.map(_fetchPaymentStatus));
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _fetchPaymentStatus(Map<String, dynamic> order) async {
+    final oid = _orderId(order);
+    if (oid.isEmpty) return;
+    try {
+      final result = await AuthService.instance.getPaymentByOrderId(oid);
+      debugPrint('💳 [PayStatus] orderId=$oid '
+          'success=${result.success} data=${result.data}');
+      if (result.success && result.data != null) {
+        // Backend may return paymentStatus as int or as paymentStatusName
+        final raw = result.data!['paymentStatus'] ??
+            result.data!['status'];
+
+        int? statusInt;
+        if (raw is int) {
+          statusInt = raw;
+        } else if (raw is String) {
+          // Map string names to int constants
+          switch (raw.toLowerCase()) {
+            case 'pending':   statusInt = _kPayPending;   break;
+            case 'completed':
+            case 'paid':
+            case 'succeeded': statusInt = _kPayCompleted; break;
+            case 'failed':    statusInt = _kPayFailed;    break;
+            case 'cancelled':
+            case 'canceled':  statusInt = _kPayCancelled; break;
+            case 'refunded':  statusInt = _kPayRefunded;  break;
+          }
+        }
+
+        if (statusInt != null && mounted) {
+          setState(() => _paymentStatusCache[oid] = statusInt!);
+          debugPrint('💳 [PayStatus] $oid → $statusInt');
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ payment enrich $oid: $e');
+    }
   }
 
   List<Map<String, dynamic>> _extractItems(Map<String, dynamic> data) {
@@ -269,8 +387,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Keep Order')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.error),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Cancel Order',
                 style: TextStyle(color: AppColors.white)),
@@ -311,7 +428,8 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     );
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Dispute submitted! We will review it within 2-3 days.'),
+        content: Text(
+            'Dispute submitted! We will review it within 2-3 days.'),
         backgroundColor: AppColors.success,
       ));
     }
@@ -357,21 +475,18 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
               : TabBarView(
                   controller: _tabController,
                   children: [
-                    // Active tab — no dispute button
                     _buildTab(
                       orders:      active,
                       emptyMsg:    'No active orders',
                       emptyIcon:   Icons.local_shipping_outlined,
                       showDispute: false,
                     ),
-                    // Completed tab — show dispute button
                     _buildTab(
                       orders:      completed,
                       emptyMsg:    'No completed orders',
                       emptyIcon:   Icons.check_circle_outline,
                       showDispute: true,
                     ),
-                    // All tab — show dispute only on delivered
                     _buildTab(
                       orders:      all,
                       emptyMsg:    'No orders found',
@@ -416,21 +531,24 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
               padding:    const EdgeInsets.all(16),
               itemCount:  orders.length,
               itemBuilder: (_, i) {
-                final o            = orders[i];
-                final isDelivered  = _isCompleted(o);
+                final o              = orders[i];
+                final oid            = _orderId(o);
+                final isDelivered    = _isCompleted(o);
                 final showDisputeBtn = showDispute && isDelivered;
+                final payStatus      = _paymentStatus(oid);
 
                 return _OrderCard(
-                  orderId:      _orderId(o),
-                  orderNumber:  _orderNumber(o),
-                  status:       _statusLabel(o),
-                  supplierName: _supplierName(o),
-                  date:         _orderDate(o),
-                  time:         _orderTime(o),
-                  items:        _itemCount(o),
-                  totalAmount:  _orderTotal(o),
-                  canCancel:    _isActive(o),
-                  showDispute:  showDisputeBtn,
+                  orderId:       oid,
+                  orderNumber:   _orderNumber(o),
+                  status:        _statusLabel(o),
+                  supplierName:  _supplierName(o),
+                  date:          _orderDate(o),
+                  time:          _orderTime(o),
+                  items:         _itemCount(o),
+                  totalAmount:   _orderTotal(o),
+                  canCancel:     _isActive(o),
+                  showDispute:   showDisputeBtn,
+                  paymentStatus: payStatus,
                   onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -446,13 +564,65 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 }
 
 // ══════════════════════════════════════════════════════════
-//  ORDER CARD  — updated with Raise Dispute button
+//  PAYMENT STATUS BADGE
+// ══════════════════════════════════════════════════════════
+class _PaymentBadge extends StatelessWidget {
+  final int status;
+  const _PaymentBadge(this.status);
+
+  ({String label, Color color, IconData icon}) get _info {
+    switch (status) {
+      case _kPayPending:
+        return (label: 'Pending',   color: const Color(0xFFF59E0B), icon: Icons.hourglass_empty);
+      case _kPayCompleted:
+        return (label: 'Paid',      color: AppColors.success,       icon: Icons.check_circle_outline);
+      case _kPayFailed:
+        return (label: 'Failed',    color: AppColors.error,         icon: Icons.error_outline);
+      case _kPayCancelled:
+        return (label: 'Cancelled', color: AppColors.textSecondary, icon: Icons.cancel_outlined);
+      case _kPayRefunded:
+        return (label: 'Refunded',  color: const Color(0xFF3B82F6), icon: Icons.reply_outlined);
+      default:
+        return (label: 'Unknown',   color: AppColors.textHint,      icon: Icons.help_outline);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final info = _info;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color:        info.color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(6),
+        border:       Border.all(color: info.color.withOpacity(0.5)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(info.icon, size: 11, color: info.color),
+        const SizedBox(width: 3),
+        Text(info.label,
+            style: TextStyle(
+                fontSize:   11,
+                fontWeight: FontWeight.w600,
+                color:      info.color)),
+      ]),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  ORDER CARD — with payment status badge
 // ══════════════════════════════════════════════════════════
 class _OrderCard extends StatelessWidget {
   final String orderId, orderNumber, status, supplierName, date, time;
   final int    items;
   final double totalAmount;
   final bool   canCancel, showDispute;
+
+  /// Payment status int (1-5) from GET /api/payments/order/{id}.
+  /// Null means the API hasn't responded yet or returned nothing.
+  final int?   paymentStatus;
+
   final VoidCallback onTap, onCancel, onDispute;
 
   const _OrderCard({
@@ -469,6 +639,7 @@ class _OrderCard extends StatelessWidget {
     required this.onTap,
     required this.onCancel,
     required this.onDispute,
+    this.paymentStatus,
   });
 
   Color _statusColor() {
@@ -516,7 +687,7 @@ class _OrderCard extends StatelessWidget {
         ),
         child: Column(children: [
 
-          // ── Header ──────────────────────────────────
+          // ── Header row ───────────────────────────────
           Row(children: [
             Container(
               padding: const EdgeInsets.all(12),
@@ -534,22 +705,20 @@ class _OrderCard extends StatelessWidget {
                 Text(
                   orderNumber.isNotEmpty ? orderNumber : orderId,
                   style: const TextStyle(
-                      fontSize: 15,
+                      fontSize:   15,
                       fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                      color:      AppColors.textPrimary),
+                  maxLines:  1,
+                  overflow:  TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 4),
                 Row(children: [
-                  const Icon(Icons.store,
-                      size: 14, color: AppColors.textHint),
+                  const Icon(Icons.store, size: 14, color: AppColors.textHint),
                   const SizedBox(width: 4),
                   Expanded(
                       child: Text(supplierName,
                           style: const TextStyle(
-                              fontSize: 13,
-                              color: AppColors.textSecondary),
+                              fontSize: 13, color: AppColors.textSecondary),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis)),
                 ]),
@@ -567,15 +736,15 @@ class _OrderCard extends StatelessWidget {
                 ]),
               ]),
             ),
-            Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
+            // ── Right column: amount + order status + payment badge ──
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text('£${totalAmount.toStringAsFixed(2)}',
                   style: const TextStyle(
-                      fontSize: 17,
+                      fontSize:   17,
                       fontWeight: FontWeight.bold,
-                      color: AppColors.textPrimary)),
-              const SizedBox(height: 6),
+                      color:      AppColors.textPrimary)),
+              const SizedBox(height: 5),
+              // Order status badge
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 4),
@@ -585,10 +754,38 @@ class _OrderCard extends StatelessWidget {
                 ),
                 child: Text(status,
                     style: TextStyle(
-                        fontSize: 11,
+                        fontSize:   11,
                         fontWeight: FontWeight.w600,
-                        color: color)),
+                        color:      color)),
               ),
+              const SizedBox(height: 5),
+              // ── Payment status badge ─────────────────
+              if (paymentStatus != null)
+                _PaymentBadge(paymentStatus!)
+              else
+                // Subtle loading shimmer while fetching
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color:        AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                    SizedBox(
+                      width: 9, height: 9,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 1.5, color: AppColors.textHint),
+                    ),
+                    SizedBox(width: 4),
+                    Text('Payment',
+                        style: TextStyle(
+                            fontSize: 10,
+                            color:    AppColors.textHint)),
+                  ]),
+                ),
             ]),
           ]),
 
@@ -596,7 +793,7 @@ class _OrderCard extends StatelessWidget {
           const Divider(height: 1),
           const SizedBox(height: 10),
 
-          // ── Footer ───────────────────────────────────
+          // ── Footer row ───────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -606,8 +803,7 @@ class _OrderCard extends StatelessWidget {
                 const SizedBox(width: 5),
                 Text('$items items',
                     style: const TextStyle(
-                        fontSize: 13,
-                        color: AppColors.textSecondary)),
+                        fontSize: 13, color: AppColors.textSecondary)),
               ]),
               Row(children: [
                 // Cancel button (active orders)
@@ -631,7 +827,7 @@ class _OrderCard extends StatelessWidget {
                     ),
                   ),
 
-                // ── Raise Dispute (delivered orders only) ──
+                // Raise Dispute (delivered orders only)
                 if (showDispute)
                   GestureDetector(
                     onTap: onDispute,
@@ -653,19 +849,19 @@ class _OrderCard extends StatelessWidget {
                         const SizedBox(width: 4),
                         const Text('Dispute',
                             style: TextStyle(
-                                fontSize: 12,
+                                fontSize:   12,
                                 fontWeight: FontWeight.w600,
-                                color: AppColors.warning)),
+                                color:      AppColors.warning)),
                       ]),
                     ),
                   ),
 
-                // Track / View Details
+                // Track / View Details link
                 if (!isCancelled)
                   Text(
                     isDelivered ? 'View Details' : 'Track Order',
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize:   13,
                       fontWeight: FontWeight.w600,
                       color: isDelivered
                           ? AppColors.textSecondary
@@ -696,16 +892,16 @@ class _ErrorView extends StatelessWidget {
   Widget build(BuildContext context) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child:
-              Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
             const Icon(Icons.error_outline,
                 size: 60, color: AppColors.error),
             const SizedBox(height: 16),
             Text(message,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 15,
-                    color: AppColors.textSecondary)),
+                    fontSize: 15, color: AppColors.textSecondary)),
             const SizedBox(height: 24),
             ElevatedButton.icon(
                 onPressed: onRetry,
