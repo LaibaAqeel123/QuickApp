@@ -25,20 +25,6 @@ class OrderSuccessScreen extends StatelessWidget {
       (orderData?['id'] ?? orderData?['orderId'] ??
           orderData?['orderNumber'] ?? '#ORD00000').toString();
 
-  String get _estimatedDelivery {
-    final raw = orderData?['estimatedDelivery'] ??
-        orderData?['estimatedDeliveryTime'] ?? orderData?['deliveryTime'];
-    if (raw == null) return 'Tomorrow, 10:00 AM';
-    try {
-      final dt = DateTime.parse(raw.toString()).toLocal();
-      const months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      final h  = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
-      final m  = dt.minute.toString().padLeft(2, '0');
-      final ap = dt.hour >= 12 ? 'PM' : 'AM';
-      return '${dt.day} ${months[dt.month]}, $h:$m $ap';
-    } catch (_) { return raw.toString(); }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -213,27 +199,7 @@ class OrderSuccessScreen extends StatelessWidget {
                       )),
                     ],
                   ),
-                  const Divider(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Est. Delivery',
-                          style: TextStyle(fontSize: 14,
-                              color: AppColors.textSecondary)),
-                      Flexible(child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.access_time, size: 15,
-                                color: AppColors.primary),
-                            const SizedBox(width: 4),
-                            Flexible(child: Text(_estimatedDelivery,
-                                style: const TextStyle(fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textPrimary),
-                                overflow: TextOverflow.ellipsis)),
-                          ])),
-                    ],
-                  ),
+                  
                 ]),
               ),
             ],

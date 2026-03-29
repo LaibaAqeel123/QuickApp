@@ -7,16 +7,9 @@ import 'package:food_delivery_app/presentation/buyer/screens/order_history_scree
 import 'package:food_delivery_app/presentation/buyer/screens/buyer_profile_screen.dart';
 
 class BuyerMainScreen extends StatefulWidget {
-  // ══════════════════════════════════════════════════════
-  //  reloadCart flag
-  //
-  //  FIX: When navigating here after a successful payment,
-  //  PaymentSuccessScreen passes reloadCart=true.
-  //  BuyerMainScreen uses this to call CartScreen.reload()
-  //  immediately after the first frame renders, guaranteeing
-  //  the cart shows as empty even if the clearCartApi() call
-  //  was still in progress during navigation.
-  // ══════════════════════════════════════════════════════
+  /// When true, CartScreen.reload() is called on first frame.
+  /// Pass this after a successful payment so the cart shows
+  /// as empty immediately without waiting for a tab switch.
   final bool reloadCart;
 
   const BuyerMainScreen({super.key, this.reloadCart = false});
@@ -36,14 +29,17 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
   void initState() {
     super.initState();
 
-    // ── Reload cart on first frame if flagged ──────────
-    // This handles the case where we just completed payment.
-    // We post a frame callback so the CartScreen widget is
-    // fully built before we call reload() on it.
     if (widget.reloadCart) {
       debugPrint('🛒 [BuyerMain] reloadCart=true — '
           'scheduling CartScreen.reload() after first frame');
+
+      // Use postFrameCallback so the CartScreen widget tree
+      // is fully built and the GlobalKey is attached before
+      // we call reload() on it.
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        // Reload the cart — this re-fetches from API and will
+        // show an empty list because clearCartApi() was already
+        // called from PaymentSuccessScreen.
         _cartKey.currentState?.reload();
         debugPrint('🛒 [BuyerMain] CartScreen.reload() called');
       });
@@ -51,13 +47,15 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
   }
 
   /// Switch to a tab by index.
-  /// Always reloads cart when switching to tab 2 (Cart).
+  /// Always calls CartScreen.reload() when switching to tab 2
+  /// so the cart is always fresh regardless of how we arrive.
   void switchTab(int index) {
     if (!mounted) return;
     setState(() => _currentIndex = index);
     if (index == 2) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _cartKey.currentState?.reload();
+        debugPrint('🛒 [BuyerMain] switchTab(2) → reload()');
       });
     }
   }
@@ -86,8 +84,10 @@ class BuyerMainScreenState extends State<BuyerMainScreen> {
       BrowseScreen(onViewCart: () => switchTab(2)),
 
       // ── Cart ──────────────────────────────────────────
+      // GlobalKey lets initState and switchTab call reload()
+      // on CartScreenState from outside the widget.
       CartScreen(
-        key:        _cartKey,
+        key:         _cartKey,
         onBrowseTap: () => switchTab(1),
       ),
 
