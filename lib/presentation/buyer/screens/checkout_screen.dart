@@ -267,36 +267,22 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     setState(() => _isPlacingOrder = false);
 
     if (result.success) {
-      final data = result.data as Map<String, dynamic>?;
-      final warning = data?['warningMessage']?.toString();
-      if (warning != null && warning.isNotEmpty && mounted) {
-        await showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            title: const Row(children: [
-              Icon(Icons.info_outline, color: Colors.orange),
-              SizedBox(width: 8),
-              Expanded(child: Text('Multiple Orders Created')),
-            ]),
-            content: SingleChildScrollView(child: Text(warning)),
-            actions: [
-              ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('OK, Got It')),
-            ],
-          ),
-        );
-      }
-      if (!mounted) return;
+      final data    = result.data as Map<String, dynamic>?;
       final orderId = _extractOrderId(data);
+
+      // FIX: The warningMessage dialog has been intentionally removed here.
+      // The multi-supplier delivery fee breakdown is already shown and
+      // confirmed by the user via the popup in CartScreen before they reach
+      // this screen.  Showing it again here is redundant and disruptive.
+
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
           builder: (_) => PaymentScreen(
-            orderId: orderId ?? '',
-            // Use widget.total which already includes the confirmed
-            // full delivery fee (base × stores) set before navigation.
+            orderId:    orderId ?? '',
+            // widget.total already includes the confirmed full delivery fee
+            // (base × stores) set before navigation from CartScreen.
             orderTotal: widget.total,
             orderData:  data,
           ),
@@ -472,9 +458,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   _SummRow('Subtotal',
                       '£${widget.subtotal.toStringAsFixed(2)}'),
                   const SizedBox(height: 8),
-                  // Show the confirmed full delivery fee here.
-                  // widget.deliveryFee = base × stores, already
-                  // confirmed by the user via the popup in CartScreen.
                   _SummRow('Delivery Fee',
                       '£${widget.deliveryFee.toStringAsFixed(2)}'),
                   if (_isDiscountApplied &&
@@ -501,7 +484,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ],
                   const Divider(height: 24),
-                  // widget.total = subtotal + (base × stores)
                   _SummRow('Total',
                       '£${widget.total.toStringAsFixed(2)}',
                       bold: true),

@@ -19,17 +19,10 @@ const int _kPayRefunded  = 5;
 //  FILTER MODEL
 // ══════════════════════════════════════════════════════════
 class _OrderFilter {
-  // Order status — null means "all"
-  Set<String> orderStatuses;   // 'Processing', 'Out for Delivery', 'Delivered', 'Cancelled'
-
-  // Payment status — null means "all"
-  Set<int> paymentStatuses;    // 1-5
-
-  // Date range
+  Set<String> orderStatuses;
+  Set<int> paymentStatuses;
   DateTime? dateFrom;
   DateTime? dateTo;
-
-  // Sort
   bool newestFirst;
 
   _OrderFilter({
@@ -77,6 +70,71 @@ class _OrderFilter {
 }
 
 // ══════════════════════════════════════════════════════════
+//  DELIVERY STATUS → DISPLAY LABEL
+//
+//  The backend sets order.status = 2 (OutForDelivery) as soon as a
+//  delivery record is created/assigned — even before the driver has
+//  actually picked up the parcel. The granular delivery record status
+//  is the only accurate source of where in the journey the order is.
+//
+//  Mapping (backend delivery status string → customer-facing label):
+//
+//  pendingassignment / pending_assignment  → "Processing"   (no driver yet)
+//  accepted / assigned                     → "Processing"   (driver assigned, not picked up)
+//  pickedup / picked_up / intransit        → "Out for Delivery"
+//  delivered / completed                   → "Delivered"
+//  cancelled / canceled / failed           → (fall back to order status)
+//
+//  If no delivery record exists yet, or the status is unrecognised,
+//  fall back to the order's own status field.
+// ══════════════════════════════════════════════════════════
+
+/// Maps a raw delivery-status string to a customer-visible label.
+/// Returns null when the delivery status should be ignored and the
+/// caller should fall back to the order's own status field.
+String? _deliveryStatusToLabel(String raw) {
+  final s = raw.toLowerCase().replaceAll(RegExp(r'[\s_\-]'), '');
+  switch (s) {
+    // Driver not yet assigned / just assigned — order is still processing
+    case 'pendingassignment':
+    case 'pending':
+    case 'created':
+    case 'new':
+      return 'Processing';
+
+    // Driver accepted the job but has NOT picked it up yet — still processing
+    case 'accepted':
+    case 'assigned':
+    case 'driverassigned':
+      return 'Processing';
+
+    // Driver has physically collected the parcel → out for delivery
+    case 'pickedup':
+    case 'pickeddup':   // common typo in some backends
+    case 'intransit':
+    case 'ontheway':
+    case 'enroute':
+      return 'Out for Delivery';
+
+    // Order successfully handed to customer
+    case 'delivered':
+    case 'completed':
+    case 'done':
+      return 'Delivered';
+
+    // Terminal failure states — let order status speak
+    case 'cancelled':
+    case 'canceled':
+    case 'failed':
+    case 'rejected':
+      return null;
+
+    default:
+      return null;   // unknown → fall back to order status
+  }
+}
+
+// ══════════════════════════════════════════════════════════
 //  ORDER HISTORY SCREEN
 // ══════════════════════════════════════════════════════════
 class OrderHistoryScreen extends StatefulWidget {
@@ -95,10 +153,12 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool    _isLoading = true;
   String? _error;
 
+  // Stores the resolved customer-facing label (never the raw backend string).
+  // Only populated after the delivery record has been fetched.
+  // Key = orderId, Value = one of: 'Processing' | 'Out for Delivery' | 'Delivered'
   final Map<String, String> _deliveryStatusCache = {};
   final Map<String, int>    _paymentStatusCache  = {};
 
-  // Current filter state
   _OrderFilter _filter = _OrderFilter();
 
   @override
@@ -115,21 +175,30 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   }
 
   // ── Status helpers ──────────────────────────────────
+
+  /// Returns the customer-facing order status label.
+  ///
+  /// Priority:
+  ///   1. If we have a resolved delivery-status label in the cache → use it.
+  ///      (The delivery record is more granular than order.status which the
+  ///       backend sets to 2/OutForDelivery too early.)
+  ///   2. Otherwise fall back to the order's own status int/string.
   String _statusLabel(Map<String, dynamic> o) {
     final oid    = _orderId(o);
-    final cached = (_deliveryStatusCache[oid] ?? '').toLowerCase().trim();
+    final cached = _deliveryStatusCache[oid];
 
-    if (cached == 'delivered')                          return 'Delivered';
-    if (cached == 'pickedup' || cached == 'picked_up') return 'Out for Delivery';
-    if (cached == 'accepted' || cached == 'assigned')  return 'Processing';
-    if (cached == 'pendingassignment' ||
-        cached == 'pending_assignment')                 return 'Processing';
+    // Use cached delivery label if available (already translated to
+    // customer-facing label by _deliveryStatusToLabel).
+    if (cached != null && cached.isNotEmpty) return cached;
 
+    // Fall back to the order's own status field.
     final raw = o['status'] ?? o['orderStatus'];
     if (raw is int) {
       switch (raw) {
         case _kStatusProcessing:     return 'Processing';
-        case _kStatusOutForDelivery: return 'Out for Delivery';
+        case _kStatusOutForDelivery: return 'Processing'; // backend sets this too
+                                                          // early; treat as Processing
+                                                          // until delivery record confirms
         case _kStatusDelivered:      return 'Delivered';
         case _kStatusCancelled:      return 'Cancelled';
         default:                     return 'Processing';
@@ -139,14 +208,14 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       switch (raw.toLowerCase().replaceAll(RegExp(r'[\s_]'), '')) {
         case 'processing':
         case 'pending':
-        case 'confirmed':    return 'Processing';
-        case 'outfordelivery':
-        case 'intransit':    return 'Out for Delivery';
+        case 'confirmed':
+        case 'outfordelivery':  // same reason — backend sets too early
+        case 'intransit':       return 'Processing';
         case 'delivered':
-        case 'completed':    return 'Delivered';
+        case 'completed':       return 'Delivered';
         case 'cancelled':
-        case 'canceled':     return 'Cancelled';
-        default:             return raw;
+        case 'canceled':        return 'Cancelled';
+        default:                return 'Processing';
       }
     }
     return 'Processing';
@@ -214,30 +283,24 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   // ══════════════════════════════════════════════════════
   //  FILTER + SORT LOGIC
   // ══════════════════════════════════════════════════════
-
-  /// Apply the current _filter to a list of orders and sort them.
   List<Map<String, dynamic>> _applyFilter(List<Map<String, dynamic>> list) {
     var result = list.where((o) {
       final oid = _orderId(o);
 
-      // 1. Order status filter
       if (_filter.orderStatuses.isNotEmpty) {
         if (!_filter.orderStatuses.contains(_statusLabel(o))) return false;
       }
 
-      // 2. Payment status filter
       if (_filter.paymentStatuses.isNotEmpty) {
         final ps = _paymentStatusCache[oid];
         if (ps == null || !_filter.paymentStatuses.contains(ps)) return false;
       }
 
-      // 3. Date range filter
       final dt = _orderDateTime(o);
       if (_filter.dateFrom != null && dt != null) {
         if (dt.isBefore(_filter.dateFrom!)) return false;
       }
       if (_filter.dateTo != null && dt != null) {
-        // include the full day
         final endOfDay = DateTime(
             _filter.dateTo!.year,
             _filter.dateTo!.month,
@@ -248,7 +311,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       return true;
     }).toList();
 
-    // 4. Sort
     result.sort((a, b) {
       final da = _orderDateTime(a) ?? DateTime(2000);
       final db = _orderDateTime(b) ?? DateTime(2000);
@@ -291,22 +353,15 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       if (id.isNotEmpty && seen.add(id)) dedup.add(o);
     }
 
-    for (final o in dedup) {
-      final raw = o['status'] ?? o['orderStatus'];
-      final oid = _orderId(o);
-      if (oid.isEmpty) continue;
-      if (raw == _kStatusDelivered ||
-          (raw is String && raw.toLowerCase().contains('deliver'))) {
-        _deliveryStatusCache[oid] = 'delivered';
-      }
-    }
-
     setState(() {
       _rawOrders = dedup;
       _isLoading = false;
       _error     = dedup.isEmpty ? err : null;
     });
 
+    // Enrich with delivery + payment statuses in background.
+    // We do NOT pre-seed the delivery cache from the order status here —
+    // we always fetch the delivery record to get the accurate granular status.
     await Future.wait([
       _enrichDeliveryStatuses(dedup),
       _enrichPaymentStatuses(dedup),
@@ -314,6 +369,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   }
 
   Future<void> _enrichDeliveryStatuses(List<Map<String, dynamic>> orders) async {
+    // Fetch delivery status for all non-cancelled orders.
     final toCheck = orders.where((o) {
       final oid = _orderId(o);
       if (oid.isEmpty) return false;
@@ -326,6 +382,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       return true;
     }).toList();
 
+    // Fetch in batches of 5 to avoid hammering the server.
     for (int i = 0; i < toCheck.length; i += 5) {
       await Future.wait(toCheck.skip(i).take(5).map(_fetchDeliveryStatus));
     }
@@ -338,13 +395,30 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     try {
       final result = await AuthService.instance.getDeliveryByOrderId(oid);
       if (result.success && result.data != null) {
+        // Try both common field names the backend might use.
         final rawStatus = (result.data!['deliveryStatus'] ??
                 result.data!['status'] ?? '')
-            .toString().trim().toLowerCase();
-        if (rawStatus.isEmpty || rawStatus == 'failed') return;
-        if (mounted) setState(() => _deliveryStatusCache[oid] = rawStatus);
+            .toString()
+            .trim();
+
+        if (rawStatus.isEmpty) return;
+
+        // Translate raw backend status → customer-facing label.
+        final label = _deliveryStatusToLabel(rawStatus);
+
+        // label == null means "unrecognised / terminal failure" — ignore,
+        // let the order's own status field show through.
+        if (label == null) return;
+
+        debugPrint('[delivery] $oid: "$rawStatus" → "$label"');
+
+        if (mounted) {
+          setState(() => _deliveryStatusCache[oid] = label);
+        }
       }
-    } catch (e) { debugPrint('⚠️ delivery enrich $oid: $e'); }
+    } catch (e) {
+      debugPrint('⚠️ delivery enrich $oid: $e');
+    }
   }
 
   Future<void> _enrichPaymentStatuses(List<Map<String, dynamic>> orders) async {
@@ -381,7 +455,9 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
           setState(() => _paymentStatusCache[oid] = statusInt!);
         }
       }
-    } catch (e) { debugPrint('⚠️ payment enrich $oid: $e'); }
+    } catch (e) {
+      debugPrint('⚠️ payment enrich $oid: $e');
+    }
   }
 
   List<Map<String, dynamic>> _extractItems(Map<String, dynamic> data) {
@@ -467,7 +543,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   //  FILTER BOTTOM SHEET
   // ══════════════════════════════════════════════════════
   Future<void> _showFilterSheet() async {
-    // Work on a temporary copy so user can cancel
     _OrderFilter temp = _filter.copyWith();
 
     await showModalBottomSheet(
@@ -478,7 +553,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) {
-          // ── helper: toggle chip ────────────────────
           void toggleOrderStatus(String s) {
             setSheetState(() {
               final copy = Set<String>.from(temp.orderStatuses);
@@ -523,7 +597,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 '${d.month.toString().padLeft(2,'0')}/${d.year}';
           }
 
-          // ── Sheet UI ──────────────────────────────
           return Padding(
             padding: EdgeInsets.only(
               left: 20, right: 20, top: 16,
@@ -532,7 +605,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
             child: SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-                // Handle bar
                 Center(child: Container(
                   width: 40, height: 4,
                   decoration: BoxDecoration(
@@ -540,7 +612,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                       borderRadius: BorderRadius.circular(2)))),
                 const SizedBox(height: 16),
 
-                // Title row
                 Row(children: [
                   const Text('Filter & Sort',
                       style: TextStyle(
@@ -558,7 +629,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 ]),
                 const SizedBox(height: 20),
 
-                // ── Sort ────────────────────────────
                 _SheetSection(label: 'Sort by Date', children: [
                   Row(children: [
                     Expanded(child: _SortChip(
@@ -580,7 +650,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 ]),
                 const SizedBox(height: 20),
 
-                // ── Order Status ─────────────────────
                 _SheetSection(label: 'Order Status', children: [
                   Wrap(spacing: 8, runSpacing: 8, children: [
                     for (final s in ['Processing', 'Out for Delivery', 'Delivered', 'Cancelled'])
@@ -594,7 +663,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 ]),
                 const SizedBox(height: 20),
 
-                // ── Payment Status ───────────────────
                 _SheetSection(label: 'Payment Status', children: [
                   Wrap(spacing: 8, runSpacing: 8, children: [
                     _FilterChip(
@@ -631,10 +699,8 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 ]),
                 const SizedBox(height: 20),
 
-                // ── Date Range ───────────────────────
                 _SheetSection(label: 'Date Range', children: [
                   Row(children: [
-                    // From
                     Expanded(child: GestureDetector(
                       onTap: () => pickDate(true),
                       child: _DateBox(
@@ -651,7 +717,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                     const Icon(Icons.arrow_forward,
                         size: 18, color: AppColors.textSecondary),
                     const SizedBox(width: 12),
-                    // To
                     Expanded(child: GestureDetector(
                       onTap: () => pickDate(false),
                       child: _DateBox(
@@ -668,7 +733,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 ]),
                 const SizedBox(height: 28),
 
-                // ── Apply button ─────────────────────
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -715,12 +779,10 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    // Base lists (tab-specific)
     final activeBase    = _rawOrders.where(_isActive).toList();
     final completedBase = _rawOrders.where(_isCompleted).toList();
     final allBase       = List<Map<String, dynamic>>.from(_rawOrders);
 
-    // Apply filter to each tab independently
     final active    = _applyFilter(activeBase);
     final completed = _applyFilter(completedBase);
     final all       = _applyFilter(allBase);
@@ -735,7 +797,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
         foregroundColor: AppColors.white,
         elevation:       0,
         actions: [
-          // Filter button with badge
           Stack(
             clipBehavior: Clip.none,
             children: [
@@ -790,7 +851,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
           : _error != null && _rawOrders.isEmpty
               ? _ErrorView(message: _error!, onRetry: _loadOrders)
               : Column(children: [
-                  // Active filter chips row
                   if (_filter.hasActiveFilters)
                     _ActiveFiltersBar(
                       filter:    _filter,
@@ -906,7 +966,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 }
 
 // ══════════════════════════════════════════════════════════
-//  ACTIVE FILTERS BAR  (shown below AppBar when filters active)
+//  ACTIVE FILTERS BAR
 // ══════════════════════════════════════════════════════════
 class _ActiveFiltersBar extends StatelessWidget {
   final _OrderFilter filter;
@@ -1281,7 +1341,6 @@ class _OrderCard extends StatelessWidget {
         ),
         child: Column(children: [
 
-          // Header
           Row(children: [
             Container(
               padding: const EdgeInsets.all(12),
@@ -1364,7 +1423,6 @@ class _OrderCard extends StatelessWidget {
           const Divider(height: 1),
           const SizedBox(height: 10),
 
-          // Footer
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             Row(children: [
               const Icon(Icons.shopping_basket,
