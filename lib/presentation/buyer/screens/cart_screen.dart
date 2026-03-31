@@ -15,17 +15,12 @@ class CartScreenState extends State<CartScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _cartItems = [];
   Map<String, dynamic>? _cartMeta;
-  bool _isLoading = true;
+  bool _isLoading  = true;
   bool _isClearing = false;
   String? _errorMessage;
-
-  // Tracks whether initState has already fired the first load
   bool _hasLoadedOnce = false;
 
   @override
-  // FALSE = do NOT keep state alive between tab switches.
-  // This means every time the Cart tab is selected, Flutter
-  // rebuilds the widget and didChangeDependencies fires → reload.
   bool get wantKeepAlive => false;
 
   @override
@@ -45,20 +40,10 @@ class CartScreenState extends State<CartScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Fires every time this screen becomes visible again —
-    // including returning from OrderTrackingScreen or any
-    // other pushed route. Skip the very first call because
-    // initState already called _loadCart().
-    if (_hasLoadedOnce) {
-      _loadCart();
-    }
+    if (_hasLoadedOnce) _loadCart();
   }
 
-  /// Public — called by BuyerMainScreen via GlobalKey
-  void reload() {
-    debugPrint('🛒 [CartScreen] reload() called');
-    _loadCart();
-  }
+  void reload() => _loadCart();
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -96,17 +81,28 @@ class CartScreenState extends State<CartScreen>
   double get _subtotal =>
       _cartItems.fold(0, (s, i) => s + (_itemPrice(i) * _itemQty(i)));
 
-  double get _deliveryFee =>
+  /// Base delivery fee from API meta, or default £8.50
+  double get _baseDeliveryFee =>
       (_cartMeta?['deliveryFee'] as num?)?.toDouble() ?? 8.50;
 
-  double get _total =>
-      (_cartMeta?['total'] as num?)?.toDouble() ?? (_subtotal + _deliveryFee);
+  /// Number of distinct suppliers in the cart
+  int get _storeCount => _grouped.keys.length;
+
+  /// Delivery fee multiplied by number of stores — passed to checkout
+  /// after the user confirms the multi-store popup.
+  double get _totalDeliveryFee => _baseDeliveryFee * _storeCount;
+
+  /// What we show in the cart summary bar — just the base fee.
+  /// The full multiplied fee is revealed in the checkout popup.
+  double get _displayDeliveryFee => _baseDeliveryFee;
+
+  double get _displayTotal => _subtotal + _displayDeliveryFee;
 
   // ── API calls ──────────────────────────────────────────
   Future<void> _loadCart() async {
     if (!mounted) return;
     setState(() {
-      _isLoading = true;
+      _isLoading    = true;
       _errorMessage = null;
     });
 
@@ -116,16 +112,16 @@ class CartScreenState extends State<CartScreen>
     if (result.success && result.data != null) {
       final data = result.data!;
       List<dynamic> raw = [];
-      if (data['items'] is List) raw = data['items'] as List;
+      if (data['items']     is List) raw = data['items']     as List;
       if (data['cartItems'] is List) raw = data['cartItems'] as List;
       setState(() {
-        _cartMeta = data;
+        _cartMeta  = data;
         _cartItems = raw.whereType<Map<String, dynamic>>().toList();
         _isLoading = false;
       });
     } else {
       setState(() {
-        _isLoading = false;
+        _isLoading    = false;
         _errorMessage = result.message ?? 'Failed to load cart.';
       });
     }
@@ -137,7 +133,7 @@ class CartScreenState extends State<CartScreen>
       return;
     }
     final item = _cartItems[index];
-    final id = _itemId(item);
+    final id   = _itemId(item);
     if (id.isEmpty) return;
     setState(() => _cartItems[index]['quantity'] = newQty);
     final result = await AuthService.instance
@@ -153,7 +149,7 @@ class CartScreenState extends State<CartScreen>
 
   Future<void> _removeItem(int index) async {
     final item = _cartItems[index];
-    final id = _itemId(item);
+    final id   = _itemId(item);
     if (id.isEmpty) return;
     setState(() => _cartItems.removeAt(index));
     final result = await AuthService.instance.removeCartItem(id);
@@ -183,11 +179,201 @@ class CartScreenState extends State<CartScreen>
     }
   }
 
+  /// Shows a dialog warning the user about multiple stores.
+  /// Returns true if the user wants to continue, false if they cancel.
+  Future<bool> _confirmMultiStore() async {
+    if (_storeCount <= 1) return true; // no warning needed
+
+    final storeNames = _grouped.keys.toList();
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20)),
+            contentPadding: EdgeInsets.zero,
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 20, horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(20)),
+                  ),
+                  child: Column(children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade100,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.store_mall_directory_outlined,
+                          color: Colors.orange, size: 32),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Order from $_storeCount Stores',
+                      style: const TextStyle(
+                          fontSize:   18,
+                          fontWeight: FontWeight.bold,
+                          color:      Colors.black87),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Your cart has items from multiple stores',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey.shade600),
+                    ),
+                  ]),
+                ),
+
+                // Store list
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Stores in your order:',
+                          style: TextStyle(
+                              fontSize:   13,
+                              fontWeight: FontWeight.w600,
+                              color:      Colors.black54)),
+                      const SizedBox(height: 8),
+                      ...storeNames.map((name) => Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(children: [
+                              Container(
+                                width:  8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                    color: AppColors.primary,
+                                    shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(name,
+                                    style: const TextStyle(
+                                        fontSize:   14,
+                                        fontWeight: FontWeight.w500,
+                                        color:      Colors.black87)),
+                              ),
+                            ]),
+                          )),
+                    ],
+                  ),
+                ),
+
+                // Delivery fee breakdown — this is where we reveal the full fee
+                Container(
+                  margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color:        Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: Colors.orange.shade200, width: 1),
+                  ),
+                  child: Column(children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Base delivery fee',
+                            style: TextStyle(
+                                fontSize: 13,
+                                color:    Colors.grey.shade700)),
+                        Text('£${_baseDeliveryFee.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color:    Colors.black87)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('× $_storeCount stores',
+                            style: TextStyle(
+                                fontSize: 13,
+                                color:    Colors.grey.shade700)),
+                        Text('= £${_totalDeliveryFee.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                fontSize:   14,
+                                fontWeight: FontWeight.bold,
+                                color:      Colors.orange)),
+                      ],
+                    ),
+                    const Divider(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total delivery fee',
+                            style: TextStyle(
+                                fontSize:   14,
+                                fontWeight: FontWeight.w600,
+                                color:      Colors.black87)),
+                        Text('£${_totalDeliveryFee.toStringAsFixed(2)}',
+                            style: TextStyle(
+                                fontSize:   15,
+                                fontWeight: FontWeight.bold,
+                                color:      Colors.orange.shade700)),
+                      ],
+                    ),
+                  ]),
+                ),
+
+                // Buttons
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('Continue to Checkout',
+                            style: TextStyle(
+                                fontSize:   15,
+                                fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: const Text('Review My Cart',
+                            style: TextStyle(fontSize: 15)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ) ??
+        false;
+  }
+
   void _snack(String msg, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
+      content:         Text(msg),
       backgroundColor: isError ? AppColors.error : AppColors.success,
-      duration: const Duration(seconds: 2),
+      duration:        const Duration(seconds: 2),
     ));
   }
 
@@ -201,46 +387,37 @@ class CartScreenState extends State<CartScreen>
 
   IconData _icon(String cat) {
     switch (cat.toLowerCase()) {
-      case 'bakery':
-        return Icons.bakery_dining;
-      case 'meat':
-        return Icons.set_meal;
-      case 'dairy':
-        return Icons.local_drink;
+      case 'bakery':        return Icons.bakery_dining;
+      case 'meat':          return Icons.set_meal;
+      case 'dairy':         return Icons.local_drink;
       case 'fruit & veg':
       case 'fruit and veg':
-      case 'vegetables':
-        return Icons.eco;
-      case 'frozen':
-        return Icons.ac_unit;
-      case 'dry items':
-        return Icons.grain;
-      default:
-        return Icons.shopping_basket;
+      case 'vegetables':    return Icons.eco;
+      case 'frozen':        return Icons.ac_unit;
+      case 'dry items':     return Icons.grain;
+      default:              return Icons.shopping_basket;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Required call when using AutomaticKeepAliveClientMixin
     super.build(context);
 
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: Text('Cart (${_cartItems.length})'),
+        title:           Text('Cart (${_cartItems.length})'),
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
-        elevation: 0,
+        elevation:       0,
         actions: [
           if (_cartItems.isNotEmpty)
             _isClearing
                 ? const Padding(
-                    padding:
-                        EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
                     child: SizedBox(
-                      width: 20,
-                      height: 20,
+                      width: 20, height: 20,
                       child: CircularProgressIndicator(
                           color: AppColors.white, strokeWidth: 2),
                     ),
@@ -257,8 +434,13 @@ class CartScreenState extends State<CartScreen>
           : _errorMessage != null
               ? _ErrorView(message: _errorMessage!, onRetry: _loadCart)
               : _cartItems.isEmpty
-                  ? _EmptyCartView(onBrowse: widget.onBrowseTap ?? () {})
+                  ? _EmptyCartView(
+                      onBrowse: widget.onBrowseTap ?? () {})
                   : Column(children: [
+                      // ── Multi-store banner REMOVED ─────
+                      // The full delivery fee breakdown is shown
+                      // in the checkout popup instead.
+
                       Expanded(
                         child: RefreshIndicator(
                           onRefresh: _loadCart,
@@ -286,31 +468,29 @@ class CartScreenState extends State<CartScreen>
                                     child: Row(children: [
                                       const Icon(Icons.store,
                                           color: AppColors.primary,
-                                          size: 20),
+                                          size:  20),
                                       const SizedBox(width: 8),
                                       Text(supplier,
                                           style: const TextStyle(
-                                              fontSize: 15,
-                                              fontWeight:
-                                                  FontWeight.bold,
+                                              fontSize:   15,
+                                              fontWeight: FontWeight.bold,
                                               color: AppColors.primary)),
                                     ]),
                                   ),
                                   ...items.map((item) {
-                                    final gi =
-                                        _cartItems.indexOf(item);
+                                    final gi = _cartItems.indexOf(item);
                                     return _CartItemCard(
-                                      item: item,
-                                      itemName: _itemName(item),
-                                      price: _itemPrice(item),
-                                      quantity: _itemQty(item),
-                                      unit: _itemUnit(item),
-                                      icon: _icon(_itemCategory(item)),
+                                      item:       item,
+                                      itemName:   _itemName(item),
+                                      price:      _itemPrice(item),
+                                      quantity:   _itemQty(item),
+                                      unit:       _itemUnit(item),
+                                      icon:       _icon(_itemCategory(item)),
                                       onIncrease: () => _updateQuantity(
                                           gi, _itemQty(item) + 1),
                                       onDecrease: () => _updateQuantity(
                                           gi, _itemQty(item) - 1),
-                                      onRemove: () => _removeItem(gi),
+                                      onRemove:   () => _removeItem(gi),
                                     );
                                   }),
                                   const SizedBox(height: 16),
@@ -320,35 +500,58 @@ class CartScreenState extends State<CartScreen>
                           ),
                         ),
                       ),
+
                       _OrderSummaryBar(
-                        subtotal: _subtotal,
-                        deliveryFee: _deliveryFee,
-                        total: _total,
-                        cartItems: _cartItems,
-                        cartMeta: _cartMeta,
-                        onCheckoutSuccess: _loadCart,
+                        subtotal:          _subtotal,
+                        // Show only the base delivery fee here.
+                        // The total (multiplied) fee is shown in
+                        // the popup before proceeding to checkout.
+                        displayDeliveryFee: _displayDeliveryFee,
+                        displayTotal:       _displayTotal,
+                        // Pass the real multiplied fee to checkout
+                        // after the user confirms the popup.
+                        actualDeliveryFee:  _totalDeliveryFee,
+                        actualTotal:        _subtotal + _totalDeliveryFee,
+                        storeCount:         _storeCount,
+                        cartItems:          _cartItems,
+                        cartMeta:           _cartMeta,
+                        onCheckoutSuccess:  _loadCart,
+                        onProceed:          _confirmMultiStore,
                       ),
                     ]),
     );
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  ORDER SUMMARY BAR
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  Order Summary Bar
+//  - displayDeliveryFee / displayTotal  → shown in cart (base fee only)
+//  - actualDeliveryFee  / actualTotal   → passed to CheckoutScreen
+//    after the user confirms the multi-store popup
+// ══════════════════════════════════════════════════════════
 class _OrderSummaryBar extends StatelessWidget {
-  final double subtotal, deliveryFee, total;
+  final double subtotal;
+  final double displayDeliveryFee;
+  final double displayTotal;
+  final double actualDeliveryFee;
+  final double actualTotal;
+  final int    storeCount;
   final List<Map<String, dynamic>> cartItems;
-  final Map<String, dynamic>? cartMeta;
-  final VoidCallback onCheckoutSuccess;
+  final Map<String, dynamic>?      cartMeta;
+  final VoidCallback               onCheckoutSuccess;
+  final Future<bool> Function()    onProceed;
 
   const _OrderSummaryBar({
     required this.subtotal,
-    required this.deliveryFee,
-    required this.total,
+    required this.displayDeliveryFee,
+    required this.displayTotal,
+    required this.actualDeliveryFee,
+    required this.actualTotal,
+    required this.storeCount,
     required this.cartItems,
     required this.cartMeta,
     required this.onCheckoutSuccess,
+    required this.onProceed,
   });
 
   @override
@@ -359,36 +562,47 @@ class _OrderSummaryBar extends StatelessWidget {
         color: AppColors.surface,
         boxShadow: [
           BoxShadow(
-              color: Colors.black.withOpacity(0.1),
+              color:      Colors.black.withOpacity(0.1),
               blurRadius: 10,
-              offset: const Offset(0, -5))
+              offset:     const Offset(0, -5)),
         ],
       ),
       child: SafeArea(
         top: false,
         child: Column(children: [
-          _SummaryRow('Subtotal', '£${subtotal.toStringAsFixed(2)}'),
+          _SummaryRow('Subtotal',
+              '£${subtotal.toStringAsFixed(2)}'),
           const SizedBox(height: 8),
-          _SummaryRow(
-              'Delivery Fee', '£${deliveryFee.toStringAsFixed(2)}'),
+          // Always show just the base delivery fee in the cart.
+          // No store-count multiplier here — that appears in the popup.
+          _SummaryRow('Delivery Fee',
+              '£${displayDeliveryFee.toStringAsFixed(2)}'),
           const Divider(height: 24),
-          _SummaryRow('Total', '£${total.toStringAsFixed(2)}',
+          _SummaryRow('Total',
+              '£${displayTotal.toStringAsFixed(2)}',
               bold: true),
           const SizedBox(height: 16),
           SizedBox(
-            width: double.infinity,
+            width:  double.infinity,
             height: 56,
             child: ElevatedButton(
               onPressed: () async {
+                // Show multi-store confirmation if needed.
+                // Only after user taps "Continue to Checkout" do we
+                // proceed with the full (multiplied) delivery fee.
+                final proceed = await onProceed();
+                if (!proceed || !context.mounted) return;
+
                 final success = await Navigator.push<bool>(
                   context,
                   MaterialPageRoute(
                     builder: (_) => CheckoutScreen(
-                      cartItems: cartItems,
-                      subtotal: subtotal,
-                      deliveryFee: deliveryFee,
-                      total: total,
-                      cartMeta: cartMeta,
+                      cartItems:   cartItems,
+                      subtotal:    subtotal,
+                      // After popup confirmation, use the real fee
+                      deliveryFee: actualDeliveryFee,
+                      total:       actualTotal,
+                      cartMeta:    cartMeta,
                     ),
                   ),
                 );
@@ -406,7 +620,9 @@ class _OrderSummaryBar extends StatelessWidget {
 class _SummaryRow extends StatelessWidget {
   final String label, value;
   final bool bold;
-  const _SummaryRow(this.label, this.value, {this.bold = false});
+  final Color? valueColor;
+  const _SummaryRow(this.label, this.value,
+      {this.bold = false, this.valueColor});
 
   @override
   Widget build(BuildContext context) => Row(
@@ -414,25 +630,22 @@ class _SummaryRow extends StatelessWidget {
         children: [
           Text(label,
               style: TextStyle(
-                  fontSize: bold ? 18 : 15,
-                  fontWeight:
-                      bold ? FontWeight.bold : FontWeight.normal,
-                  color: AppColors.textSecondary)),
+                  fontSize:   bold ? 18 : 15,
+                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+                  color:      AppColors.textSecondary)),
           Text(value,
               style: TextStyle(
-                  fontSize: bold ? 20 : 15,
-                  fontWeight:
-                      bold ? FontWeight.bold : FontWeight.w600,
-                  color: bold
-                      ? AppColors.primary
-                      : AppColors.textPrimary)),
+                  fontSize:   bold ? 20 : 15,
+                  fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+                  color:      valueColor ??
+                      (bold ? AppColors.primary : AppColors.textPrimary))),
         ],
       );
 }
 
-// ══════════════════════════════════════════════════════════════
-//  EMPTY CART VIEW
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  Empty Cart
+// ══════════════════════════════════════════════════════════
 class _EmptyCartView extends StatelessWidget {
   final VoidCallback onBrowse;
   const _EmptyCartView({required this.onBrowse});
@@ -447,9 +660,9 @@ class _EmptyCartView extends StatelessWidget {
           const SizedBox(height: 24),
           const Text('Your cart is empty',
               style: TextStyle(
-                  fontSize: 22,
+                  fontSize:   22,
                   fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
+                  color:      AppColors.textPrimary)),
           const SizedBox(height: 8),
           const Text('Add products to get started',
               style: TextStyle(
@@ -457,7 +670,7 @@ class _EmptyCartView extends StatelessWidget {
           const SizedBox(height: 32),
           ElevatedButton.icon(
             onPressed: onBrowse,
-            icon: const Icon(Icons.shopping_bag),
+            icon:  const Icon(Icons.shopping_bag),
             label: const Text('Browse Products'),
             style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(
@@ -467,9 +680,9 @@ class _EmptyCartView extends StatelessWidget {
       );
 }
 
-// ══════════════════════════════════════════════════════════════
-//  ERROR VIEW
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  Error View
+// ══════════════════════════════════════════════════════════
 class _ErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
@@ -488,25 +701,26 @@ class _ErrorView extends StatelessWidget {
             Text(message,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 16, color: AppColors.textSecondary)),
+                    fontSize: 16,
+                    color:    AppColors.textSecondary)),
             const SizedBox(height: 24),
             ElevatedButton.icon(
                 onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
+                icon:  const Icon(Icons.refresh),
                 label: const Text('Retry')),
           ]),
         ),
       );
 }
 
-// ══════════════════════════════════════════════════════════════
-//  CART ITEM CARD
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+//  Cart Item Card
+// ══════════════════════════════════════════════════════════
 class _CartItemCard extends StatelessWidget {
   final Map<String, dynamic> item;
-  final String itemName, unit;
-  final double price;
-  final int quantity;
+  final String   itemName, unit;
+  final double   price;
+  final int      quantity;
   final IconData icon;
   final VoidCallback onIncrease, onDecrease, onRemove;
 
@@ -527,16 +741,16 @@ class _CartItemCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color:        AppColors.surface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.border),
+          border:       Border.all(color: AppColors.border),
         ),
         child: Row(children: [
           Container(
-            width: 60,
+            width:  60,
             height: 60,
             decoration: BoxDecoration(
-              color: AppColors.surfaceLight,
+              color:        AppColors.surfaceLight,
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, size: 32, color: AppColors.primary),
@@ -546,58 +760,57 @@ class _CartItemCard extends StatelessWidget {
             child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(itemName,
-                      style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary)),
-                  const SizedBox(height: 4),
-                  Text('£${price.toStringAsFixed(2)} per $unit',
-                      style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textSecondary)),
-                  const SizedBox(height: 8),
-                  Text('£${(price * quantity).toStringAsFixed(2)}',
-                      style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.primary)),
-                ]),
+              Text(itemName,
+                  style: const TextStyle(
+                      fontSize:   15,
+                      fontWeight: FontWeight.bold,
+                      color:      AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              Text('£${price.toStringAsFixed(2)} per $unit',
+                  style: const TextStyle(
+                      fontSize: 13, color: AppColors.textSecondary)),
+              const SizedBox(height: 8),
+              Text('£${(price * quantity).toStringAsFixed(2)}',
+                  style: const TextStyle(
+                      fontSize:   16,
+                      fontWeight: FontWeight.bold,
+                      color:      AppColors.primary)),
+            ]),
           ),
           Column(children: [
             Row(children: [
               _QtyBtn(
-                  icon: Icons.remove,
-                  bg: AppColors.surface,
-                  fg: AppColors.textPrimary,
-                  onTap: onDecrease,
+                  icon:   Icons.remove,
+                  bg:     AppColors.surface,
+                  fg:     AppColors.textPrimary,
+                  onTap:  onDecrease,
                   border: true),
               SizedBox(
                 width: 40,
                 child: Center(
                   child: Text('$quantity',
                       style: const TextStyle(
-                          fontSize: 16,
+                          fontSize:   16,
                           fontWeight: FontWeight.bold,
-                          color: AppColors.textPrimary)),
+                          color:      AppColors.textPrimary)),
                 ),
               ),
               _QtyBtn(
-                  icon: Icons.add,
-                  bg: AppColors.primary,
-                  fg: AppColors.white,
+                  icon:  Icons.add,
+                  bg:    AppColors.primary,
+                  fg:    AppColors.white,
                   onTap: onIncrease),
             ]),
             const SizedBox(height: 8),
             TextButton(
               onPressed: onRemove,
               style: TextButton.styleFrom(
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(0, 0),
+                  padding:       EdgeInsets.zero,
+                  minimumSize:   const Size(0, 0),
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap),
               child: const Text('Remove',
-                  style:
-                      TextStyle(fontSize: 12, color: AppColors.error)),
+                  style: TextStyle(
+                      fontSize: 12, color: AppColors.error)),
             ),
           ]),
         ]),
@@ -605,27 +818,20 @@ class _CartItemCard extends StatelessWidget {
 }
 
 class _QtyBtn extends StatelessWidget {
-  final IconData icon;
-  final Color bg, fg;
-  final VoidCallback onTap;
-  final bool border;
-
+  final IconData icon; final Color bg, fg;
+  final VoidCallback onTap; final bool border;
   const _QtyBtn({
-    required this.icon,
-    required this.bg,
-    required this.fg,
-    required this.onTap,
-    this.border = false,
+    required this.icon, required this.bg,
+    required this.fg, required this.onTap, this.border = false,
   });
 
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
         child: Container(
-          width: 32,
-          height: 32,
+          width:  32, height: 32,
           decoration: BoxDecoration(
-            color: bg,
+            color:        bg,
             borderRadius: BorderRadius.circular(8),
             border: border ? Border.all(color: AppColors.border) : null,
           ),

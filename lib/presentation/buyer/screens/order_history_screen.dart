@@ -9,13 +9,76 @@ const int _kStatusOutForDelivery = 2;
 const int _kStatusDelivered      = 3;
 const int _kStatusCancelled      = 4;
 
-// ── Payment status constants ────────────────────────────
 const int _kPayPending   = 1;
 const int _kPayCompleted = 2;
 const int _kPayFailed    = 3;
 const int _kPayCancelled = 4;
 const int _kPayRefunded  = 5;
 
+// ══════════════════════════════════════════════════════════
+//  FILTER MODEL
+// ══════════════════════════════════════════════════════════
+class _OrderFilter {
+  // Order status — null means "all"
+  Set<String> orderStatuses;   // 'Processing', 'Out for Delivery', 'Delivered', 'Cancelled'
+
+  // Payment status — null means "all"
+  Set<int> paymentStatuses;    // 1-5
+
+  // Date range
+  DateTime? dateFrom;
+  DateTime? dateTo;
+
+  // Sort
+  bool newestFirst;
+
+  _OrderFilter({
+    Set<String>? orderStatuses,
+    Set<int>? paymentStatuses,
+    this.dateFrom,
+    this.dateTo,
+    this.newestFirst = true,
+  })  : orderStatuses  = orderStatuses  ?? {},
+        paymentStatuses = paymentStatuses ?? {};
+
+  bool get hasActiveFilters =>
+      orderStatuses.isNotEmpty ||
+      paymentStatuses.isNotEmpty ||
+      dateFrom != null ||
+      dateTo   != null ||
+      !newestFirst;
+
+  int get activeFilterCount {
+    int count = 0;
+    if (orderStatuses.isNotEmpty)   count++;
+    if (paymentStatuses.isNotEmpty) count++;
+    if (dateFrom != null || dateTo != null) count++;
+    if (!newestFirst) count++;
+    return count;
+  }
+
+  _OrderFilter copyWith({
+    Set<String>? orderStatuses,
+    Set<int>?    paymentStatuses,
+    DateTime?    dateFrom,
+    DateTime?    dateTo,
+    bool?        newestFirst,
+    bool         clearDateFrom = false,
+    bool         clearDateTo   = false,
+  }) => _OrderFilter(
+        orderStatuses:   orderStatuses  ?? Set.from(this.orderStatuses),
+        paymentStatuses: paymentStatuses ?? Set.from(this.paymentStatuses),
+        dateFrom:  clearDateFrom ? null : (dateFrom  ?? this.dateFrom),
+        dateTo:    clearDateTo   ? null : (dateTo    ?? this.dateTo),
+        newestFirst: newestFirst ?? this.newestFirst,
+      );
+
+  _OrderFilter reset() => _OrderFilter(newestFirst: true);
+}
+
+// ══════════════════════════════════════════════════════════
+//  ORDER HISTORY SCREEN
+// ══════════════════════════════════════════════════════════
 class OrderHistoryScreen extends StatefulWidget {
   const OrderHistoryScreen({super.key});
 
@@ -32,11 +95,11 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool    _isLoading = true;
   String? _error;
 
-  // Delivery status cache: orderId → raw status string
   final Map<String, String> _deliveryStatusCache = {};
+  final Map<String, int>    _paymentStatusCache  = {};
 
-  // Payment status cache: orderId → payment status int (1-5)
-  final Map<String, int> _paymentStatusCache = {};
+  // Current filter state
+  _OrderFilter _filter = _OrderFilter();
 
   @override
   void initState() {
@@ -51,7 +114,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     super.dispose();
   }
 
-  // ── Order status helpers ────────────────────────────
+  // ── Status helpers ──────────────────────────────────
   String _statusLabel(Map<String, dynamic> o) {
     final oid    = _orderId(o);
     final cached = (_deliveryStatusCache[oid] ?? '').toLowerCase().trim();
@@ -97,50 +160,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool _isCompleted(Map<String, dynamic> o) =>
       _statusLabel(o).toLowerCase() == 'delivered';
 
-  // ── Payment status helpers ──────────────────────────
   int? _paymentStatus(String orderId) => _paymentStatusCache[orderId];
-
-  /// Returns label, color, and icon for a payment status int.
-  ({String label, Color color, IconData icon}) _paymentInfo(int status) {
-    switch (status) {
-      case _kPayPending:
-        return (
-          label: 'Pending',
-          color: const Color(0xFFF59E0B),   // amber
-          icon:  Icons.hourglass_empty,
-        );
-      case _kPayCompleted:
-        return (
-          label: 'Paid',
-          color: AppColors.success,
-          icon:  Icons.check_circle_outline,
-        );
-      case _kPayFailed:
-        return (
-          label: 'Failed',
-          color: AppColors.error,
-          icon:  Icons.error_outline,
-        );
-      case _kPayCancelled:
-        return (
-          label: 'Cancelled',
-          color: AppColors.textSecondary,
-          icon:  Icons.cancel_outlined,
-        );
-      case _kPayRefunded:
-        return (
-          label: 'Refunded',
-          color: const Color(0xFF3B82F6),   // blue
-          icon:  Icons.reply_outlined,
-        );
-      default:
-        return (
-          label: 'Unknown',
-          color: AppColors.textHint,
-          icon:  Icons.help_outline,
-        );
-    }
-  }
 
   // ── Field helpers ───────────────────────────────────
   String _orderId(Map<String, dynamic> o) =>
@@ -185,6 +205,59 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       (o['supplierName'] ?? o['supplier']?['name'] ?? o['vendor'] ?? 'Supplier')
           .toString();
 
+  DateTime? _orderDateTime(Map<String, dynamic> o) {
+    final raw = o['createdAt'] ?? o['date'] ?? o['orderDate'];
+    if (raw == null) return null;
+    return DateTime.tryParse(raw.toString());
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  FILTER + SORT LOGIC
+  // ══════════════════════════════════════════════════════
+
+  /// Apply the current _filter to a list of orders and sort them.
+  List<Map<String, dynamic>> _applyFilter(List<Map<String, dynamic>> list) {
+    var result = list.where((o) {
+      final oid = _orderId(o);
+
+      // 1. Order status filter
+      if (_filter.orderStatuses.isNotEmpty) {
+        if (!_filter.orderStatuses.contains(_statusLabel(o))) return false;
+      }
+
+      // 2. Payment status filter
+      if (_filter.paymentStatuses.isNotEmpty) {
+        final ps = _paymentStatusCache[oid];
+        if (ps == null || !_filter.paymentStatuses.contains(ps)) return false;
+      }
+
+      // 3. Date range filter
+      final dt = _orderDateTime(o);
+      if (_filter.dateFrom != null && dt != null) {
+        if (dt.isBefore(_filter.dateFrom!)) return false;
+      }
+      if (_filter.dateTo != null && dt != null) {
+        // include the full day
+        final endOfDay = DateTime(
+            _filter.dateTo!.year,
+            _filter.dateTo!.month,
+            _filter.dateTo!.day, 23, 59, 59);
+        if (dt.isAfter(endOfDay)) return false;
+      }
+
+      return true;
+    }).toList();
+
+    // 4. Sort
+    result.sort((a, b) {
+      final da = _orderDateTime(a) ?? DateTime(2000);
+      final db = _orderDateTime(b) ?? DateTime(2000);
+      return _filter.newestFirst ? db.compareTo(da) : da.compareTo(db);
+    });
+
+    return result;
+  }
+
   // ── Load orders ─────────────────────────────────────
   Future<void> _loadOrders() async {
     if (!mounted) return;
@@ -202,14 +275,13 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 
     if (!mounted) return;
 
-    final all = <Map<String, dynamic>>[];
+    final all  = <Map<String, dynamic>>[];
     String? err;
 
     for (final r in futures) {
       if (r.data == null) { if (!r.success) err ??= r.message; continue; }
-      final items = _extractItems(r.data!);
+      all.addAll(_extractItems(r.data!));
       if (!r.success) err ??= r.message;
-      all.addAll(items);
     }
 
     final seen  = <String>{};
@@ -219,7 +291,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       if (id.isNotEmpty && seen.add(id)) dedup.add(o);
     }
 
-    // Pre-populate obvious delivered statuses from order data
     for (final o in dedup) {
       final raw = o['status'] ?? o['orderStatus'];
       final oid = _orderId(o);
@@ -236,16 +307,13 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       _error     = dedup.isEmpty ? err : null;
     });
 
-    // Enrich with delivery AND payment statuses in parallel
     await Future.wait([
       _enrichDeliveryStatuses(dedup),
       _enrichPaymentStatuses(dedup),
     ]);
   }
 
-  // ── Delivery status enrichment ───────────────────────
-  Future<void> _enrichDeliveryStatuses(
-      List<Map<String, dynamic>> orders) async {
+  Future<void> _enrichDeliveryStatuses(List<Map<String, dynamic>> orders) async {
     final toCheck = orders.where((o) {
       final oid = _orderId(o);
       if (oid.isEmpty) return false;
@@ -259,8 +327,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     }).toList();
 
     for (int i = 0; i < toCheck.length; i += 5) {
-      final batch = toCheck.skip(i).take(5).toList();
-      await Future.wait(batch.map(_fetchDeliveryStatus));
+      await Future.wait(toCheck.skip(i).take(5).map(_fetchDeliveryStatus));
     }
     if (mounted) setState(() {});
   }
@@ -273,28 +340,17 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       if (result.success && result.data != null) {
         final rawStatus = (result.data!['deliveryStatus'] ??
                 result.data!['status'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
+            .toString().trim().toLowerCase();
         if (rawStatus.isEmpty || rawStatus == 'failed') return;
         if (mounted) setState(() => _deliveryStatusCache[oid] = rawStatus);
       }
     } catch (e) { debugPrint('⚠️ delivery enrich $oid: $e'); }
   }
 
-  // ── Payment status enrichment ─────────────────────────
-  // Fetches GET /api/payments/order/{orderId} for every order
-  // in batches of 5 to avoid hammering the API.
-  Future<void> _enrichPaymentStatuses(
-      List<Map<String, dynamic>> orders) async {
-    // Only fetch for orders that have an id
-    final toFetch = orders
-        .where((o) => _orderId(o).isNotEmpty)
-        .toList();
-
+  Future<void> _enrichPaymentStatuses(List<Map<String, dynamic>> orders) async {
+    final toFetch = orders.where((o) => _orderId(o).isNotEmpty).toList();
     for (int i = 0; i < toFetch.length; i += 5) {
-      final batch = toFetch.skip(i).take(5).toList();
-      await Future.wait(batch.map(_fetchPaymentStatus));
+      await Future.wait(toFetch.skip(i).take(5).map(_fetchPaymentStatus));
     }
     if (mounted) setState(() {});
   }
@@ -304,18 +360,12 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     if (oid.isEmpty) return;
     try {
       final result = await AuthService.instance.getPaymentByOrderId(oid);
-      debugPrint('💳 [PayStatus] orderId=$oid '
-          'success=${result.success} data=${result.data}');
       if (result.success && result.data != null) {
-        // Backend may return paymentStatus as int or as paymentStatusName
-        final raw = result.data!['paymentStatus'] ??
-            result.data!['status'];
-
+        final raw = result.data!['paymentStatus'] ?? result.data!['status'];
         int? statusInt;
         if (raw is int) {
           statusInt = raw;
         } else if (raw is String) {
-          // Map string names to int constants
           switch (raw.toLowerCase()) {
             case 'pending':   statusInt = _kPayPending;   break;
             case 'completed':
@@ -327,15 +377,11 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
             case 'refunded':  statusInt = _kPayRefunded;  break;
           }
         }
-
         if (statusInt != null && mounted) {
           setState(() => _paymentStatusCache[oid] = statusInt!);
-          debugPrint('💳 [PayStatus] $oid → $statusInt');
         }
       }
-    } catch (e) {
-      debugPrint('⚠️ payment enrich $oid: $e');
-    }
+    } catch (e) { debugPrint('⚠️ payment enrich $oid: $e'); }
   }
 
   List<Map<String, dynamic>> _extractItems(Map<String, dynamic> data) {
@@ -348,21 +394,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     return [];
   }
 
-  List<Map<String, dynamic>> _sorted(List<Map<String, dynamic>> list) {
-    final copy = List<Map<String, dynamic>>.from(list);
-    copy.sort((a, b) {
-      final da = DateTime.tryParse(
-              (a['createdAt'] ?? a['date'] ?? '').toString()) ??
-          DateTime(2000);
-      final db = DateTime.tryParse(
-              (b['createdAt'] ?? b['date'] ?? '').toString()) ??
-          DateTime(2000);
-      return db.compareTo(da);
-    });
-    return copy;
-  }
-
-  // ── Cancel order ────────────────────────────────────
+  // ── Cancel ──────────────────────────────────────────
   Future<void> _showCancelDialog(Map<String, dynamic> order) async {
     final ctrl      = TextEditingController();
     final confirmed = await showDialog<bool>(
@@ -399,9 +431,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 
     final result = await AuthService.instance.cancelOrder(
       orderId: _orderId(order),
-      reason:  ctrl.text.trim().isEmpty
-          ? 'Cancelled by customer'
-          : ctrl.text.trim(),
+      reason:  ctrl.text.trim().isEmpty ? 'Cancelled by customer' : ctrl.text.trim(),
     );
     if (!mounted) return;
 
@@ -409,13 +439,12 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       content: Text(result.success
           ? 'Order cancelled successfully.'
           : (result.message ?? 'Failed to cancel order.')),
-      backgroundColor:
-          result.success ? AppColors.success : AppColors.error,
+      backgroundColor: result.success ? AppColors.success : AppColors.error,
     ));
     if (result.success) _loadOrders();
   }
 
-  // ── Raise dispute ───────────────────────────────────
+  // ── Dispute ─────────────────────────────────────────
   Future<void> _raiseDispute(Map<String, dynamic> order) async {
     final result = await Navigator.push<bool>(
       context,
@@ -428,19 +457,275 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     );
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'Dispute submitted! We will review it within 2-3 days.'),
+        content: Text('Dispute submitted! We will review it within 2-3 days.'),
         backgroundColor: AppColors.success,
       ));
     }
   }
 
-  // ── Build ───────────────────────────────────────────
+  // ══════════════════════════════════════════════════════
+  //  FILTER BOTTOM SHEET
+  // ══════════════════════════════════════════════════════
+  Future<void> _showFilterSheet() async {
+    // Work on a temporary copy so user can cancel
+    _OrderFilter temp = _filter.copyWith();
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          // ── helper: toggle chip ────────────────────
+          void toggleOrderStatus(String s) {
+            setSheetState(() {
+              final copy = Set<String>.from(temp.orderStatuses);
+              copy.contains(s) ? copy.remove(s) : copy.add(s);
+              temp = temp.copyWith(orderStatuses: copy);
+            });
+          }
+
+          void togglePayStatus(int s) {
+            setSheetState(() {
+              final copy = Set<int>.from(temp.paymentStatuses);
+              copy.contains(s) ? copy.remove(s) : copy.add(s);
+              temp = temp.copyWith(paymentStatuses: copy);
+            });
+          }
+
+          Future<void> pickDate(bool isFrom) async {
+            final now = DateTime.now();
+            final picked = await showDatePicker(
+              context: ctx,
+              initialDate: (isFrom ? temp.dateFrom : temp.dateTo) ?? now,
+              firstDate: DateTime(2020),
+              lastDate:  now,
+              builder: (c, child) => Theme(
+                data: Theme.of(c).copyWith(
+                    colorScheme: ColorScheme.light(primary: AppColors.primary)),
+                child: child!,
+              ),
+            );
+            if (picked != null) {
+              setSheetState(() {
+                temp = isFrom
+                    ? temp.copyWith(dateFrom: picked)
+                    : temp.copyWith(dateTo: picked);
+              });
+            }
+          }
+
+          String fmtDate(DateTime? d) {
+            if (d == null) return 'Any';
+            return '${d.day.toString().padLeft(2,'0')}/'
+                '${d.month.toString().padLeft(2,'0')}/${d.year}';
+          }
+
+          // ── Sheet UI ──────────────────────────────
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 20, right: 20, top: 16,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+            ),
+            child: SingleChildScrollView(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+                // Handle bar
+                Center(child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(2)))),
+                const SizedBox(height: 16),
+
+                // Title row
+                Row(children: [
+                  const Text('Filter & Sort',
+                      style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary)),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () {
+                      setSheetState(() => temp = _OrderFilter());
+                    },
+                    child: const Text('Reset all',
+                        style: TextStyle(color: AppColors.error)),
+                  ),
+                ]),
+                const SizedBox(height: 20),
+
+                // ── Sort ────────────────────────────
+                _SheetSection(label: 'Sort by Date', children: [
+                  Row(children: [
+                    Expanded(child: _SortChip(
+                      label: 'Newest first',
+                      icon:  Icons.arrow_downward,
+                      selected: temp.newestFirst,
+                      onTap: () => setSheetState(
+                          () => temp = temp.copyWith(newestFirst: true)),
+                    )),
+                    const SizedBox(width: 10),
+                    Expanded(child: _SortChip(
+                      label: 'Oldest first',
+                      icon:  Icons.arrow_upward,
+                      selected: !temp.newestFirst,
+                      onTap: () => setSheetState(
+                          () => temp = temp.copyWith(newestFirst: false)),
+                    )),
+                  ]),
+                ]),
+                const SizedBox(height: 20),
+
+                // ── Order Status ─────────────────────
+                _SheetSection(label: 'Order Status', children: [
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    for (final s in ['Processing', 'Out for Delivery', 'Delivered', 'Cancelled'])
+                      _FilterChip(
+                        label: s,
+                        selected: temp.orderStatuses.contains(s),
+                        color: _orderStatusColor(s),
+                        onTap: () => toggleOrderStatus(s),
+                      ),
+                  ]),
+                ]),
+                const SizedBox(height: 20),
+
+                // ── Payment Status ───────────────────
+                _SheetSection(label: 'Payment Status', children: [
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    _FilterChip(
+                      label: 'Paid',
+                      selected: temp.paymentStatuses.contains(_kPayCompleted),
+                      color: AppColors.success,
+                      onTap: () => togglePayStatus(_kPayCompleted),
+                    ),
+                    _FilterChip(
+                      label: 'Pending',
+                      selected: temp.paymentStatuses.contains(_kPayPending),
+                      color: const Color(0xFFF59E0B),
+                      onTap: () => togglePayStatus(_kPayPending),
+                    ),
+                    _FilterChip(
+                      label: 'Failed',
+                      selected: temp.paymentStatuses.contains(_kPayFailed),
+                      color: AppColors.error,
+                      onTap: () => togglePayStatus(_kPayFailed),
+                    ),
+                    _FilterChip(
+                      label: 'Refunded',
+                      selected: temp.paymentStatuses.contains(_kPayRefunded),
+                      color: const Color(0xFF3B82F6),
+                      onTap: () => togglePayStatus(_kPayRefunded),
+                    ),
+                    _FilterChip(
+                      label: 'Cancelled',
+                      selected: temp.paymentStatuses.contains(_kPayCancelled),
+                      color: AppColors.textSecondary,
+                      onTap: () => togglePayStatus(_kPayCancelled),
+                    ),
+                  ]),
+                ]),
+                const SizedBox(height: 20),
+
+                // ── Date Range ───────────────────────
+                _SheetSection(label: 'Date Range', children: [
+                  Row(children: [
+                    // From
+                    Expanded(child: GestureDetector(
+                      onTap: () => pickDate(true),
+                      child: _DateBox(
+                        label: 'From',
+                        value: fmtDate(temp.dateFrom),
+                        hasValue: temp.dateFrom != null,
+                        onClear: temp.dateFrom != null
+                            ? () => setSheetState(
+                                () => temp = temp.copyWith(clearDateFrom: true))
+                            : null,
+                      ),
+                    )),
+                    const SizedBox(width: 12),
+                    const Icon(Icons.arrow_forward,
+                        size: 18, color: AppColors.textSecondary),
+                    const SizedBox(width: 12),
+                    // To
+                    Expanded(child: GestureDetector(
+                      onTap: () => pickDate(false),
+                      child: _DateBox(
+                        label: 'To',
+                        value: fmtDate(temp.dateTo),
+                        hasValue: temp.dateTo != null,
+                        onClear: temp.dateTo != null
+                            ? () => setSheetState(
+                                () => temp = temp.copyWith(clearDateTo: true))
+                            : null,
+                      ),
+                    )),
+                  ]),
+                ]),
+                const SizedBox(height: 28),
+
+                // ── Apply button ─────────────────────
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      setState(() => _filter = temp);
+                      Navigator.pop(ctx);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Text(
+                      temp.activeFilterCount > 0
+                          ? 'Apply (${temp.activeFilterCount} active)'
+                          : 'Apply',
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Color _orderStatusColor(String s) {
+    switch (s.toLowerCase()) {
+      case 'processing':       return AppColors.warning;
+      case 'out for delivery': return AppColors.info;
+      case 'delivered':        return AppColors.success;
+      case 'cancelled':        return AppColors.error;
+      default:                 return AppColors.textSecondary;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    final active    = _sorted(_rawOrders.where(_isActive).toList());
-    final completed = _sorted(_rawOrders.where(_isCompleted).toList());
-    final all       = _sorted(_rawOrders);
+    // Base lists (tab-specific)
+    final activeBase    = _rawOrders.where(_isActive).toList();
+    final completedBase = _rawOrders.where(_isCompleted).toList();
+    final allBase       = List<Map<String, dynamic>>.from(_rawOrders);
+
+    // Apply filter to each tab independently
+    final active    = _applyFilter(activeBase);
+    final completed = _applyFilter(completedBase);
+    final all       = _applyFilter(allBase);
+
+    final filterCount = _filter.activeFilterCount;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -450,6 +735,38 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
         foregroundColor: AppColors.white,
         elevation:       0,
         actions: [
+          // Filter button with badge
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              IconButton(
+                icon:      const Icon(Icons.tune),
+                tooltip:   'Filter & Sort',
+                onPressed: _showFilterSheet,
+              ),
+              if (filterCount > 0)
+                Positioned(
+                  top: 6, right: 6,
+                  child: Container(
+                    width: 16, height: 16,
+                    decoration: BoxDecoration(
+                      color:  AppColors.error,
+                      shape:  BoxShape.circle,
+                      border: Border.all(color: AppColors.primary, width: 1.5),
+                    ),
+                    child: Center(
+                      child: Text(
+                        filterCount > 9 ? '9+' : '$filterCount',
+                        style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
           IconButton(
             icon:      const Icon(Icons.refresh),
             tooltip:   'Refresh',
@@ -472,64 +789,90 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
           ? const Center(child: CircularProgressIndicator())
           : _error != null && _rawOrders.isEmpty
               ? _ErrorView(message: _error!, onRetry: _loadOrders)
-              : TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildTab(
-                      orders:      active,
-                      emptyMsg:    'No active orders',
-                      emptyIcon:   Icons.local_shipping_outlined,
-                      showDispute: false,
+              : Column(children: [
+                  // Active filter chips row
+                  if (_filter.hasActiveFilters)
+                    _ActiveFiltersBar(
+                      filter:    _filter,
+                      onClear:   () => setState(() => _filter = _OrderFilter()),
+                      onTapEdit: _showFilterSheet,
                     ),
-                    _buildTab(
-                      orders:      completed,
-                      emptyMsg:    'No completed orders',
-                      emptyIcon:   Icons.check_circle_outline,
-                      showDispute: true,
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        _buildTab(
+                          orders:      active,
+                          rawCount:    activeBase.length,
+                          emptyMsg:    'No active orders',
+                          emptyIcon:   Icons.local_shipping_outlined,
+                          showDispute: false,
+                        ),
+                        _buildTab(
+                          orders:      completed,
+                          rawCount:    completedBase.length,
+                          emptyMsg:    'No completed orders',
+                          emptyIcon:   Icons.check_circle_outline,
+                          showDispute: true,
+                        ),
+                        _buildTab(
+                          orders:      all,
+                          rawCount:    allBase.length,
+                          emptyMsg:    'No orders found',
+                          emptyIcon:   Icons.receipt_long,
+                          showDispute: true,
+                        ),
+                      ],
                     ),
-                    _buildTab(
-                      orders:      all,
-                      emptyMsg:    'No orders found',
-                      emptyIcon:   Icons.receipt_long,
-                      showDispute: true,
-                    ),
-                  ],
-                ),
+                  ),
+                ]),
     );
   }
 
   Widget _buildTab({
     required List<Map<String, dynamic>> orders,
+    required int      rawCount,
     required String   emptyMsg,
     required IconData emptyIcon,
     required bool     showDispute,
   }) {
+    final filtered = _filter.hasActiveFilters && orders.length < rawCount;
+
     return RefreshIndicator(
       onRefresh: _loadOrders,
       child: orders.isEmpty
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
-                SizedBox(
-                    height: MediaQuery.of(context).size.height * 0.25),
+                SizedBox(height: MediaQuery.of(context).size.height * 0.2),
                 Center(child: Column(children: [
                   Icon(emptyIcon, size: 80, color: AppColors.textHint),
                   const SizedBox(height: 16),
-                  Text(emptyMsg,
-                      style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textSecondary)),
+                  Text(
+                    filtered ? 'No orders match your filters' : emptyMsg,
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary),
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 8),
-                  const Text('Pull down to refresh',
-                      style: TextStyle(
-                          fontSize: 13, color: AppColors.textHint)),
+                  if (filtered)
+                    TextButton.icon(
+                      onPressed: () => setState(() => _filter = _OrderFilter()),
+                      icon:  const Icon(Icons.filter_alt_off),
+                      label: const Text('Clear filters'),
+                    )
+                  else
+                    const Text('Pull down to refresh',
+                        style: TextStyle(
+                            fontSize: 13, color: AppColors.textHint)),
                 ])),
               ],
             )
           : ListView.builder(
-              padding:    const EdgeInsets.all(16),
-              itemCount:  orders.length,
+              padding:     const EdgeInsets.all(16),
+              itemCount:   orders.length,
               itemBuilder: (_, i) {
                 final o              = orders[i];
                 final oid            = _orderId(o);
@@ -552,8 +895,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                   onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                          builder: (_) =>
-                              OrderTrackingScreen(order: o))),
+                          builder: (_) => OrderTrackingScreen(order: o))),
                   onCancel:  () => _showCancelDialog(o),
                   onDispute: () => _raiseDispute(o),
                 );
@@ -561,6 +903,262 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
             ),
     );
   }
+}
+
+// ══════════════════════════════════════════════════════════
+//  ACTIVE FILTERS BAR  (shown below AppBar when filters active)
+// ══════════════════════════════════════════════════════════
+class _ActiveFiltersBar extends StatelessWidget {
+  final _OrderFilter filter;
+  final VoidCallback onClear, onTapEdit;
+  const _ActiveFiltersBar({
+    required this.filter,
+    required this.onClear,
+    required this.onTapEdit,
+  });
+
+  static const _payLabels = {
+    _kPayPending:   'Pending',
+    _kPayCompleted: 'Paid',
+    _kPayFailed:    'Failed',
+    _kPayCancelled: 'Cancelled',
+    _kPayRefunded:  'Refunded',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final chips = <String>[];
+
+    if (!filter.newestFirst) chips.add('Oldest first');
+    for (final s in filter.orderStatuses) chips.add(s);
+    for (final p in filter.paymentStatuses) {
+      chips.add(_payLabels[p] ?? 'Pay:$p');
+    }
+    if (filter.dateFrom != null || filter.dateTo != null) {
+      final from = filter.dateFrom != null
+          ? '${filter.dateFrom!.day}/${filter.dateFrom!.month}'
+          : '';
+      final to   = filter.dateTo != null
+          ? '${filter.dateTo!.day}/${filter.dateTo!.month}'
+          : '';
+      chips.add(from.isNotEmpty && to.isNotEmpty
+          ? '$from – $to'
+          : from.isNotEmpty ? 'From $from' : 'To $to');
+    }
+
+    return Container(
+      color: AppColors.primary.withOpacity(0.06),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(children: [
+        const Icon(Icons.filter_list, size: 16, color: AppColors.primary),
+        const SizedBox(width: 6),
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              for (final chip in chips)
+                Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                        color: AppColors.primary.withOpacity(0.3)),
+                  ),
+                  child: Text(chip,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.primary)),
+                ),
+            ]),
+          ),
+        ),
+        GestureDetector(
+          onTap: onClear,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.error.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.close, size: 12, color: AppColors.error),
+              SizedBox(width: 3),
+              Text('Clear',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.error)),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SHEET HELPER WIDGETS
+// ══════════════════════════════════════════════════════════
+class _SheetSection extends StatelessWidget {
+  final String       label;
+  final List<Widget> children;
+  const _SheetSection({required this.label, required this.children});
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize:   13,
+                  fontWeight: FontWeight.bold,
+                  color:      AppColors.textSecondary)),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      );
+}
+
+class _FilterChip extends StatelessWidget {
+  final String     label;
+  final bool       selected;
+  final Color      color;
+  final VoidCallback onTap;
+  const _FilterChip({
+    required this.label,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? color.withOpacity(0.15)
+                : AppColors.surfaceLight,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? color : AppColors.border,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize:   13,
+                  fontWeight:
+                      selected ? FontWeight.bold : FontWeight.normal,
+                  color: selected ? color : AppColors.textSecondary)),
+        ),
+      );
+}
+
+class _SortChip extends StatelessWidget {
+  final String     label;
+  final IconData   icon;
+  final bool       selected;
+  final VoidCallback onTap;
+  const _SortChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.primary.withOpacity(0.1)
+                : AppColors.surfaceLight,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.border,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon,
+                size:  16,
+                color: selected
+                    ? AppColors.primary
+                    : AppColors.textSecondary),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    fontSize:   13,
+                    fontWeight:
+                        selected ? FontWeight.bold : FontWeight.normal,
+                    color: selected
+                        ? AppColors.primary
+                        : AppColors.textSecondary)),
+          ]),
+        ),
+      );
+}
+
+class _DateBox extends StatelessWidget {
+  final String     label, value;
+  final bool       hasValue;
+  final VoidCallback? onClear;
+  const _DateBox({
+    required this.label,
+    required this.value,
+    required this.hasValue,
+    this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: hasValue
+              ? AppColors.primary.withOpacity(0.06)
+              : AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: hasValue ? AppColors.primary : AppColors.border),
+        ),
+        child: Row(children: [
+          const Icon(Icons.calendar_today,
+              size: 14, color: AppColors.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 10, color: AppColors.textHint)),
+              Text(value,
+                  style: TextStyle(
+                      fontSize:   12,
+                      fontWeight: FontWeight.w600,
+                      color: hasValue
+                          ? AppColors.primary
+                          : AppColors.textSecondary)),
+            ]),
+          ),
+          if (onClear != null)
+            GestureDetector(
+              onTap: onClear,
+              child: const Icon(Icons.close,
+                  size: 14, color: AppColors.textHint),
+            ),
+        ]),
+      );
 }
 
 // ══════════════════════════════════════════════════════════
@@ -611,18 +1209,14 @@ class _PaymentBadge extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════
-//  ORDER CARD — with payment status badge
+//  ORDER CARD
 // ══════════════════════════════════════════════════════════
 class _OrderCard extends StatelessWidget {
   final String orderId, orderNumber, status, supplierName, date, time;
   final int    items;
   final double totalAmount;
   final bool   canCancel, showDispute;
-
-  /// Payment status int (1-5) from GET /api/payments/order/{id}.
-  /// Null means the API hasn't responded yet or returned nothing.
   final int?   paymentStatus;
-
   final VoidCallback onTap, onCancel, onDispute;
 
   const _OrderCard({
@@ -671,7 +1265,7 @@ class _OrderCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
+        margin:  const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color:        AppColors.surface,
@@ -687,7 +1281,7 @@ class _OrderCard extends StatelessWidget {
         ),
         child: Column(children: [
 
-          // ── Header row ───────────────────────────────
+          // Header
           Row(children: [
             Container(
               padding: const EdgeInsets.all(12),
@@ -698,72 +1292,55 @@ class _OrderCard extends StatelessWidget {
               child: Icon(_statusIcon(), color: color, size: 24),
             ),
             const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(
-                  orderNumber.isNotEmpty ? orderNumber : orderId,
+            Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Text(orderNumber.isNotEmpty ? orderNumber : orderId,
                   style: const TextStyle(
-                      fontSize:   15,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary),
-                  maxLines:  1,
-                  overflow:  TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Row(children: [
-                  const Icon(Icons.store, size: 14, color: AppColors.textHint),
-                  const SizedBox(width: 4),
-                  Expanded(
-                      child: Text(supplierName,
-                          style: const TextStyle(
-                              fontSize: 13, color: AppColors.textSecondary),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis)),
-                ]),
-                const SizedBox(height: 3),
-                Row(children: [
-                  const Icon(Icons.access_time,
-                      size: 13, color: AppColors.textHint),
-                  const SizedBox(width: 4),
-                  Flexible(
-                      child: Text('$date • $time',
-                          style: const TextStyle(
-                              fontSize: 12, color: AppColors.textHint),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis)),
-                ]),
+                      fontSize: 15, fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Icon(Icons.store, size: 14, color: AppColors.textHint),
+                const SizedBox(width: 4),
+                Expanded(child: Text(supplierName,
+                    style: const TextStyle(
+                        fontSize: 13, color: AppColors.textSecondary),
+                    maxLines: 1, overflow: TextOverflow.ellipsis)),
               ]),
-            ),
-            // ── Right column: amount + order status + payment badge ──
+              const SizedBox(height: 3),
+              Row(children: [
+                const Icon(Icons.access_time,
+                    size: 13, color: AppColors.textHint),
+                const SizedBox(width: 4),
+                Flexible(child: Text('$date • $time',
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.textHint),
+                    maxLines: 1, overflow: TextOverflow.ellipsis)),
+              ]),
+            ])),
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text('£${totalAmount.toStringAsFixed(2)}',
                   style: const TextStyle(
-                      fontSize:   17,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary)),
+                      fontSize: 17, fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
               const SizedBox(height: 5),
-              // Order status badge
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color:        color.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(status,
                     style: TextStyle(
-                        fontSize:   11,
-                        fontWeight: FontWeight.w600,
-                        color:      color)),
+                        fontSize: 11, fontWeight: FontWeight.w600,
+                        color: color)),
               ),
               const SizedBox(height: 5),
-              // ── Payment status badge ─────────────────
               if (paymentStatus != null)
                 _PaymentBadge(paymentStatus!)
               else
-                // Subtle loading shimmer while fetching
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 3),
@@ -771,19 +1348,13 @@ class _OrderCard extends StatelessWidget {
                     color:        AppColors.surfaceLight,
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                    SizedBox(
-                      width: 9, height: 9,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 1.5, color: AppColors.textHint),
-                    ),
+                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(width: 9, height: 9,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 1.5, color: AppColors.textHint)),
                     SizedBox(width: 4),
                     Text('Payment',
-                        style: TextStyle(
-                            fontSize: 10,
-                            color:    AppColors.textHint)),
+                        style: TextStyle(fontSize: 10, color: AppColors.textHint)),
                   ]),
                 ),
             ]),
@@ -793,87 +1364,73 @@ class _OrderCard extends StatelessWidget {
           const Divider(height: 1),
           const SizedBox(height: 10),
 
-          // ── Footer row ───────────────────────────────
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(children: [
-                const Icon(Icons.shopping_basket,
-                    size: 15, color: AppColors.textSecondary),
-                const SizedBox(width: 5),
-                Text('$items items',
-                    style: const TextStyle(
-                        fontSize: 13, color: AppColors.textSecondary)),
-              ]),
-              Row(children: [
-                // Cancel button (active orders)
-                if (canCancel)
-                  GestureDetector(
-                    onTap: onCancel,
-                    child: Container(
-                      margin: const EdgeInsets.only(right: 8),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.error.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: AppColors.error),
-                      ),
-                      child: const Text('Cancel',
+          // Footer
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Row(children: [
+              const Icon(Icons.shopping_basket,
+                  size: 15, color: AppColors.textSecondary),
+              const SizedBox(width: 5),
+              Text('$items items',
+                  style: const TextStyle(
+                      fontSize: 13, color: AppColors.textSecondary)),
+            ]),
+            Row(children: [
+              if (canCancel)
+                GestureDetector(
+                  onTap: onCancel,
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.error.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppColors.error),
+                    ),
+                    child: const Text('Cancel',
+                        style: TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600,
+                            color: AppColors.error)),
+                  ),
+                ),
+              if (showDispute)
+                GestureDetector(
+                  onTap: onDispute,
+                  child: Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                          color: AppColors.warning.withOpacity(0.6)),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.gavel, size: 13, color: AppColors.warning),
+                      const SizedBox(width: 4),
+                      const Text('Dispute',
                           style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.error)),
-                    ),
+                              fontSize: 12, fontWeight: FontWeight.w600,
+                              color: AppColors.warning)),
+                    ]),
                   ),
-
-                // Raise Dispute (delivered orders only)
-                if (showDispute)
-                  GestureDetector(
-                    onTap: onDispute,
-                    child: Container(
-                      margin: const EdgeInsets.only(right: 8),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.warning.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: AppColors.warning.withOpacity(0.6)),
-                      ),
-                      child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                        const Icon(Icons.gavel,
-                            size: 13, color: AppColors.warning),
-                        const SizedBox(width: 4),
-                        const Text('Dispute',
-                            style: TextStyle(
-                                fontSize:   12,
-                                fontWeight: FontWeight.w600,
-                                color:      AppColors.warning)),
-                      ]),
-                    ),
+                ),
+              if (!isCancelled)
+                Text(
+                  isDelivered ? 'View Details' : 'Track Order',
+                  style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600,
+                    color: isDelivered
+                        ? AppColors.textSecondary
+                        : AppColors.primary,
                   ),
-
-                // Track / View Details link
-                if (!isCancelled)
-                  Text(
-                    isDelivered ? 'View Details' : 'Track Order',
-                    style: TextStyle(
-                      fontSize:   13,
-                      fontWeight: FontWeight.w600,
-                      color: isDelivered
-                          ? AppColors.textSecondary
-                          : AppColors.primary,
-                    ),
-                  ),
-                const SizedBox(width: 3),
-                const Icon(Icons.arrow_forward_ios,
-                    size: 13, color: AppColors.textHint),
-              ]),
-            ],
-          ),
+                ),
+              const SizedBox(width: 3),
+              const Icon(Icons.arrow_forward_ios,
+                  size: 13, color: AppColors.textHint),
+            ]),
+          ]),
         ]),
       ),
     );
@@ -892,11 +1449,8 @@ class _ErrorView extends StatelessWidget {
   Widget build(BuildContext context) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-            const Icon(Icons.error_outline,
-                size: 60, color: AppColors.error),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.error_outline, size: 60, color: AppColors.error),
             const SizedBox(height: 16),
             Text(message,
                 textAlign: TextAlign.center,
