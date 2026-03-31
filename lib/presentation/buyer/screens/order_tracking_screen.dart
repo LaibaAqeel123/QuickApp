@@ -95,16 +95,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     } catch (_) { return raw.toString(); }
   }
 
+  // Change 1 — _statusLabel getter — add status 8
   String get _statusLabel {
     final raw = _src['status'] ?? _src['orderStatus'];
     if (raw is String) return raw;
     if (raw is int) {
       switch (raw) {
         case 1: return 'Processing';
-        case 2: return 'Out for Delivery';
-        case 3: return 'Delivered';
-        case 4: return 'Cancelled';
+        case 2: return 'Confirmed';
+        case 3: return 'Processing';
+        case 4: return 'Sent to Driver';
         case 5: return 'Delivered';
+        case 6: return 'Completed';
+        case 7: return 'Cancelled';
+        case 8: return 'Out for Delivery';
       }
     }
     return 'Processing';
@@ -112,18 +116,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
 
   // ══════════════════════════════════════════════════════
   //  SUPPLIER NAME — fixed
-  //
-  //  The order detail API response does NOT have a top-level
-  //  supplierName field. The supplier name lives inside:
-  //    items[0].supplierName   (confirmed from your logs)
-  //
-  //  Search order:
-  //  1. _src['supplierName']              – top-level (future-proof)
-  //  2. _src['supplier']['name']          – nested object
-  //  3. _src['items'][0]['supplierName']  – first item (your case)
-  //  4. _src['orderItems'][0]['supplierName']
-  //  5. _src['vendor']
-  //  6. 'Supplier'                        – final fallback
   // ══════════════════════════════════════════════════════
   String get _supplierName {
     // 1. Top-level supplierName
@@ -214,6 +206,30 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   Map<String, dynamic>? get _driver =>
       _src['driver'] as Map<String, dynamic>?;
 
+  // Change 2 — Add helper getters for supplier delivery fields
+  bool get _isSupplierDelivery =>
+      _src['isSupplierDelivery'] == true;
+
+  String? get _estimatedDeliveryTime =>
+      _src['estimatedDeliveryTime']?.toString();
+
+  String _fmtDateTime(dynamic raw) {
+    if (raw == null) return '';
+    try {
+      final dt = DateTime.parse(raw.toString()).toLocal();
+      final h  = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+      final m  = dt.minute.toString().padLeft(2, '0');
+      final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+      return '${dt.day} ${_monthName(dt.month)} ${dt.year}, $h:$m $ampm';
+    } catch (_) { return raw.toString(); }
+  }
+
+  String _monthName(int m) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun',
+      'Jul','Aug','Sep','Oct','Nov','Dec'];
+    return months[m - 1];
+  }
+
   bool _isAtLeast(String min) {
     const order = ['processing', 'out for delivery', 'delivered'];
     final cur   = order.indexOf(_statusLabel.toLowerCase());
@@ -221,15 +237,17 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     return cur >= m && cur != -1;
   }
 
+  // Change 3 — _computeDriverEnRoute — supplier delivery should NOT trigger map
   bool _computeDriverEnRoute() {
+    if (_isSupplierDelivery) return false;
     final s = _statusLabel.toLowerCase();
-    return s == 'out for delivery' || s == '2';
+    return s == 'out for delivery';
   }
 
   bool _isPickedUpFromDelivery(Map<String, dynamic>? d) {
     if (d == null) return false;
     final raw =
-        (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase();
+    (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase();
     return raw == 'pickedup' ||
         raw == 'picked_up' ||
         raw == '4' ||
@@ -268,12 +286,12 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
             if (data['code'] == 'Ok' &&
                 (data['routes'] as List).isNotEmpty) {
               final coords =
-                  data['routes'][0]['geometry']['coordinates'] as List;
+              data['routes'][0]['geometry']['coordinates'] as List;
               points = coords
                   .map((c) => LatLng(
-                        (c[1] as num).toDouble(),
-                        (c[0] as num).toDouble(),
-                      ))
+                (c[1] as num).toDouble(),
+                (c[0] as num).toDouble(),
+              ))
                   .toList();
               break;
             }
@@ -282,9 +300,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       }
       if (mounted) {
         setState(() => _routePoints =
-            (points != null && points.length >= 2)
-                ? points
-                : [_driverLocation!, _deliveryLocation!]);
+        (points != null && points.length >= 2)
+            ? points
+            : [_driverLocation!, _deliveryLocation!]);
       }
     } catch (e) {
       if (_driverLocation != null && _deliveryLocation != null && mounted) {
@@ -322,7 +340,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       }
 
       final deliveryResult =
-          await AuthService.instance.getDeliveryByOrderId(_orderId);
+      await AuthService.instance.getDeliveryByOrderId(_orderId);
       if (deliveryResult.success && deliveryResult.data != null) {
         final delivery = deliveryResult.data!;
         final dId = delivery['deliveryId']?.toString() ?? '';
@@ -344,12 +362,12 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
 
   void _tryUpdateLocationFromDelivery(Map<String, dynamic> delivery) {
     final lat = (delivery['driverLatitude'] ??
-            delivery['currentLatitude'] ??
-            delivery['latitude'] as num?)
+        delivery['currentLatitude'] ??
+        delivery['latitude'] as num?)
         ?.toDouble();
     final lng = (delivery['driverLongitude'] ??
-            delivery['currentLongitude'] ??
-            delivery['longitude'] as num?)
+        delivery['currentLongitude'] ??
+        delivery['longitude'] as num?)
         ?.toDouble();
     if (lat != null && lng != null && lat != 0.0 && lng != 0.0 && mounted) {
       setState(() {
@@ -484,13 +502,13 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     try {
       hub = HubConnectionBuilder()
           .withUrl(
-            'https://api.neptasolutions.co.uk/hubs/delivery-tracking'
+        'https://api.neptasolutions.co.uk/hubs/delivery-tracking'
             '?access_token=$token',
-            options: HttpConnectionOptions(
-              transport:       transport,
-              skipNegotiation: skipNegotiation,
-            ),
-          )
+        options: HttpConnectionOptions(
+          transport:       transport,
+          skipNegotiation: skipNegotiation,
+        ),
+      )
           .withAutomaticReconnect()
           .build();
       hub.serverTimeoutInMilliseconds     = 30000;
@@ -518,9 +536,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     if (token == null) return;
 
     await _tryConnect(
-            token: token, delivId: delivId,
-            transport: HttpTransportType.WebSockets,
-            skipNegotiation: true, label: 'WebSockets+skipNeg') ||
+        token: token, delivId: delivId,
+        transport: HttpTransportType.WebSockets,
+        skipNegotiation: true, label: 'WebSockets+skipNeg') ||
         await _tryConnect(
             token: token, delivId: delivId,
             transport: HttpTransportType.WebSockets,
@@ -577,7 +595,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
           children: [
             TileLayer(
               urlTemplate:
-                  'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+              'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.example.food_delivery_app',
               additionalOptions: const {'s': 'abcd'},
             ),
@@ -733,43 +751,164 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
               child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                Row(children: [
-                  Container(
-                    width: 10, height: 10,
-                    decoration: BoxDecoration(
-                        color: AppColors.primary, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 6),
-                  const Text('Driver',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87)),
-                ]),
-                Container(
-                  width: 40, height: 2,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                        colors: [AppColors.primary, AppColors.success]),
-                    borderRadius: BorderRadius.circular(1),
-                  ),
-                ),
-                Row(children: [
-                  Container(
-                    width: 10, height: 10,
-                    decoration: BoxDecoration(
-                        color: AppColors.success, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 6),
-                  const Text('Destination',
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87)),
-                ]),
-              ]),
+                    Row(children: [
+                      Container(
+                        width: 10, height: 10,
+                        decoration: BoxDecoration(
+                            color: AppColors.primary, shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text('Driver',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87)),
+                    ]),
+                    Container(
+                      width: 40, height: 2,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                            colors: [AppColors.primary, AppColors.success]),
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                    Row(children: [
+                      Container(
+                        width: 10, height: 10,
+                        decoration: BoxDecoration(
+                            color: AppColors.success, shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text('Destination',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87)),
+                    ]),
+                  ]),
             ),
           ),
+      ]),
+    );
+  }
+
+  // Change 5 — _buildSupplierTimelineCard method
+  Widget _buildSupplierTimelineCard() {
+    final isDelivered = _statusLabel.toLowerCase() == 'delivered' ||
+        _statusLabel.toLowerCase() == 'completed';
+    final isOutForDelivery = _statusLabel.toLowerCase() == 'out for delivery';
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: isDelivered
+              ? [AppColors.success.withOpacity(0.1),
+            AppColors.success.withOpacity(0.05)]
+              : [AppColors.primary.withOpacity(0.1),
+            AppColors.primary.withOpacity(0.05)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDelivered
+              ? AppColors.success.withOpacity(0.4)
+              : AppColors.primary.withOpacity(0.3),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+        // Icon + Title row
+        Row(children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: isDelivered
+                  ? AppColors.success.withOpacity(0.15)
+                  : AppColors.primary.withOpacity(0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              isDelivered ? Icons.check_circle : Icons.delivery_dining,
+              color: isDelivered ? AppColors.success : AppColors.primary,
+              size: 28,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isDelivered ? 'Order Delivered!' : 'Out for Delivery',
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    color: isDelivered ? AppColors.success : AppColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  isDelivered
+                      ? 'Your order has been delivered successfully.'
+                      : 'Your order is on the way!',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary),
+                ),
+              ])),
+        ]),
+
+        // Estimated delivery time
+        if (_estimatedDeliveryTime != null && !isDelivered) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(children: [
+              const Icon(Icons.access_time,
+                  color: AppColors.primary, size: 20),
+              const SizedBox(width: 10),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Expected Delivery',
+                    style: TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary)),
+                const SizedBox(height: 2),
+                Text(
+                  _fmtDateTime(_estimatedDeliveryTime),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ]),
+            ]),
+          ),
+        ],
+
+        // Note about no live tracking
+        if (isOutForDelivery) ...[
+          const SizedBox(height: 12),
+          Row(children: const [
+            Icon(Icons.info_outline,
+                size: 13, color: AppColors.textHint),
+            SizedBox(width: 6),
+            Text(
+              'Live tracking not available for this delivery.',
+              style: TextStyle(fontSize: 11, color: AppColors.textHint),
+            ),
+          ]),
+        ],
       ]),
     );
   }
@@ -810,74 +949,77 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _load,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
+        onRefresh: _load,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
 
-                  // Error banner
-                  if (_error != null)
-                    Container(
-                      margin: const EdgeInsets.all(16),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color:        AppColors.error.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppColors.error),
-                      ),
-                      child: Row(children: [
-                        const Icon(Icons.warning_amber_rounded,
-                            color: AppColors.error, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text(_error!,
-                            style: const TextStyle(
-                                fontSize: 13, color: AppColors.error))),
-                      ]),
+                // Error banner
+                if (_error != null)
+                  Container(
+                    margin: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color:        AppColors.error.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.error),
                     ),
+                    child: Row(children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          color: AppColors.error, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(_error!,
+                          style: const TextStyle(
+                              fontSize: 13, color: AppColors.error))),
+                    ]),
+                  ),
 
-                  // ETA banner
-                  if (_isDriverEnRoute && _etaMinutes != null)
-                    Container(
-                      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(colors: [
-                          AppColors.primary.withOpacity(0.1),
-                          AppColors.primary.withOpacity(0.05),
-                        ]),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                            color: AppColors.primary.withOpacity(0.3)),
-                      ),
-                      child: Row(children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: AppColors.primary.withOpacity(0.1),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.access_time,
-                              color: AppColors.primary, size: 20),
+                // ETA banner
+                if (_isDriverEnRoute && _etaMinutes != null)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(colors: [
+                        AppColors.primary.withOpacity(0.1),
+                        AppColors.primary.withOpacity(0.05),
+                      ]),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: AppColors.primary.withOpacity(0.3)),
+                    ),
+                    child: Row(children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withOpacity(0.1),
+                          shape: BoxShape.circle,
                         ),
-                        const SizedBox(width: 12),
-                        Column(crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          const Text('Estimated Arrival',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: AppColors.textSecondary)),
-                          Text(_formatEta(_etaMinutes!),
-                              style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppColors.primary)),
-                        ]),
-                      ]),
-                    ),
+                        child: const Icon(Icons.access_time,
+                            color: AppColors.primary, size: 20),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Estimated Arrival',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textSecondary)),
+                            Text(_formatEta(_etaMinutes!),
+                                style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.primary)),
+                          ]),
+                    ]),
+                  ),
 
-                  // Map
+                // Change 4 — Map or Timeline card
+                if (_isSupplierDelivery)
+                  _buildSupplierTimelineCard()
+                else
                   Container(
                     margin: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -899,208 +1041,209 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                     ),
                   ),
 
-                  // Driver card
-                  if (_driver != null ||
-                      _statusLabel.toLowerCase() == 'out for delivery')
-                    _DriverCard(driver: _driver),
+                // Change 6 — Driver card — only show for driver delivery
+                if (!_isSupplierDelivery &&
+                    (_driver != null ||
+                        _statusLabel.toLowerCase() == 'out for delivery'))
+                  _DriverCard(driver: _driver),
 
-                  // Order Status steps
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      const Text('Order Status',
-                          style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary)),
-                      const SizedBox(height: 16),
-                      _Step(
-                          title: 'Order Placed',
-                          subtitle:
-                              '${_fmtDate(_src['createdAt'] ?? _src['date'])} • '
-                              '${_fmtTime(_src['createdAt'] ?? _src['date'])}',
-                          completed: true,
-                          active: false,
-                          icon: Icons.check_circle),
-                      _Step(
-                          title:    'Order Confirmed',
-                          subtitle: 'Confirmed by supplier',
-                          completed: _isAtLeast('processing'),
-                          active: false,
-                          icon: Icons.verified),
-                      _Step(
-                          title: _statusLabel.toLowerCase() == 'processing'
-                              ? 'Preparing Order'
-                              : 'Order Prepared',
-                          subtitle:  'Being prepared by supplier',
-                          completed: _isAtLeast('out for delivery'),
-                          active:    _statusLabel.toLowerCase() == 'processing',
-                          icon: Icons.inventory_2),
-                      _Step(
-                          title:    'Out for Delivery',
-                          subtitle: 'Driver is on the way',
-                          completed: _statusLabel.toLowerCase() == 'delivered',
-                          active:    _statusLabel.toLowerCase() == 'out for delivery',
-                          icon: Icons.local_shipping),
-                      _Step(
-                          title:    'Delivered',
-                          subtitle: 'Order has been delivered',
-                          completed: _statusLabel.toLowerCase() == 'delivered',
-                          active: false,
-                          icon: Icons.check_circle,
-                          isLast: true),
-                    ]),
-                  ),
-
-                  // ── Order Details card ─────────────────
-                  Container(
-                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color:        AppColors.surface,
-                      borderRadius: BorderRadius.circular(16),
-                      border:       Border.all(color: AppColors.border),
-                      boxShadow: [
-                        BoxShadow(
-                          color:      Colors.black.withOpacity(0.04),
-                          blurRadius: 8,
-                          offset:     const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-
-                      // Header row with optional Raise Dispute button
-                      Row(children: [
-                        const Icon(Icons.receipt_long,
-                            color: AppColors.primary, size: 20),
-                        const SizedBox(width: 8),
-                        const Text('Order Details',
+                // Order Status steps
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Order Status',
                             style: TextStyle(
-                                fontSize: 16,
+                                fontSize: 18,
                                 fontWeight: FontWeight.bold,
                                 color: AppColors.textPrimary)),
-                        const Spacer(),
-                        if (isDelivered)
-                          GestureDetector(
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => DisputeFormScreen(
-                                  orderId:     _orderId,
-                                  orderNumber: _orderNumber,
+                        const SizedBox(height: 16),
+                        _Step(
+                            title: 'Order Placed',
+                            subtitle:
+                            '${_fmtDate(_src['createdAt'] ?? _src['date'])} • '
+                                '${_fmtTime(_src['createdAt'] ?? _src['date'])}',
+                            completed: true,
+                            active: false,
+                            icon: Icons.check_circle),
+                        _Step(
+                            title:    'Order Confirmed',
+                            subtitle: 'Confirmed by supplier',
+                            completed: _isAtLeast('processing'),
+                            active: false,
+                            icon: Icons.verified),
+                        _Step(
+                            title: _statusLabel.toLowerCase() == 'processing'
+                                ? 'Preparing Order'
+                                : 'Order Prepared',
+                            subtitle:  'Being prepared by supplier',
+                            completed: _isAtLeast('out for delivery'),
+                            active:    _statusLabel.toLowerCase() == 'processing',
+                            icon: Icons.inventory_2),
+                        _Step(
+                            title:    'Out for Delivery',
+                            subtitle: 'Driver is on the way',
+                            completed: _statusLabel.toLowerCase() == 'delivered',
+                            active:    _statusLabel.toLowerCase() == 'out for delivery',
+                            icon: Icons.local_shipping),
+                        _Step(
+                            title:    'Delivered',
+                            subtitle: 'Order has been delivered',
+                            completed: _statusLabel.toLowerCase() == 'delivered',
+                            active: false,
+                            icon: Icons.check_circle,
+                            isLast: true),
+                      ]),
+                ),
+
+                // ── Order Details card ─────────────────
+                Container(
+                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color:        AppColors.surface,
+                    borderRadius: BorderRadius.circular(16),
+                    border:       Border.all(color: AppColors.border),
+                    boxShadow: [
+                      BoxShadow(
+                        color:      Colors.black.withOpacity(0.04),
+                        blurRadius: 8,
+                        offset:     const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+
+                        // Header row with optional Raise Dispute button
+                        Row(children: [
+                          const Icon(Icons.receipt_long,
+                              color: AppColors.primary, size: 20),
+                          const SizedBox(width: 8),
+                          const Text('Order Details',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textPrimary)),
+                          const Spacer(),
+                          if (isDelivered)
+                            GestureDetector(
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => DisputeFormScreen(
+                                    orderId:     _orderId,
+                                    orderNumber: _orderNumber,
+                                  ),
                                 ),
                               ),
-                            ),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: AppColors.warning.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                    color: AppColors.warning.withOpacity(0.6)),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: AppColors.warning.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                      color: AppColors.warning.withOpacity(0.6)),
+                                ),
+                                child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.gavel,
+                                          size: 14, color: AppColors.warning),
+                                      SizedBox(width: 4),
+                                      Text('Raise Dispute',
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: AppColors.warning)),
+                                    ]),
                               ),
-                              child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                Icon(Icons.gavel,
-                                    size: 14, color: AppColors.warning),
-                                SizedBox(width: 4),
-                                Text('Raise Dispute',
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: AppColors.warning)),
-                              ]),
                             ),
-                          ),
-                      ]),
-                      const SizedBox(height: 14),
+                        ]),
+                        const SizedBox(height: 14),
 
-                      // Order meta rows
-                      _DRow(
-                          icon:  Icons.tag,
-                          label: 'Order ID',
-                          value: _orderNumber.isNotEmpty
-                              ? _orderNumber
-                              : _orderId),
-                      const SizedBox(height: 10),
-                      // ── Supplier name (fixed) ──────────
-                      _DRow(
-                          icon:  Icons.store,
-                          label: 'Supplier',
-                          value: _supplierName),
-                      if (_deliveryAddress != null) ...[
-                        const SizedBox(height: 10),
+                        // Order meta rows
                         _DRow(
-                            icon:  Icons.location_on_outlined,
-                            label: 'Deliver to',
-                            value: _deliveryAddress!),
-                      ],
-                      const SizedBox(height: 16),
+                            icon:  Icons.tag,
+                            label: 'Order ID',
+                            value: _orderNumber.isNotEmpty
+                                ? _orderNumber
+                                : _orderId),
+                        const SizedBox(height: 10),
+                        // ── Supplier name (fixed) ──────────
+                        _DRow(
+                            icon:  Icons.store,
+                            label: 'Supplier',
+                            value: _supplierName),
+                        if (_deliveryAddress != null) ...[
+                          const SizedBox(height: 10),
+                          _DRow(
+                              icon:  Icons.location_on_outlined,
+                              label: 'Deliver to',
+                              value: _deliveryAddress!),
+                        ],
+                        const SizedBox(height: 16),
 
-                      // Items section
-                      if (_orderItems.isNotEmpty) ...[
-                        const Text('Items Ordered',
+                        // Items section
+                        if (_orderItems.isNotEmpty) ...[
+                          const Text('Items Ordered',
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textSecondary)),
+                          const SizedBox(height: 10),
+                          const Divider(height: 1),
+                          const SizedBox(height: 10),
+                          ..._orderItems.map((item) => _ItemRow(item: item)),
+                          const SizedBox(height: 4),
+                          const Divider(height: 1),
+                          const SizedBox(height: 12),
+                        ] else if (_itemCount > 0) ...[
+                          _DRow(
+                              icon:  Icons.shopping_basket,
+                              label: 'Items',
+                              value: '$_itemCount items'),
+                          const SizedBox(height: 10),
+                        ],
+
+                        // Price breakdown
+                        const Text('Price Breakdown',
                             style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.bold,
                                 color: AppColors.textSecondary)),
                         const SizedBox(height: 10),
-                        const Divider(height: 1),
-                        const SizedBox(height: 10),
-                        ..._orderItems.map((item) => _ItemRow(item: item)),
-                        const SizedBox(height: 4),
-                        const Divider(height: 1),
-                        const SizedBox(height: 12),
-                      ] else if (_itemCount > 0) ...[
-                        _DRow(
-                            icon:  Icons.shopping_basket,
-                            label: 'Items',
-                            value: '$_itemCount items'),
-                        const SizedBox(height: 10),
-                      ],
 
-                      // Price breakdown
-                      const Text('Price Breakdown',
-                          style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textSecondary)),
-                      const SizedBox(height: 10),
+                        if (_subtotal > 0) ...[
+                          _PriceRow(label: 'Subtotal',
+                              value: '£${_subtotal.toStringAsFixed(2)}'),
+                          const SizedBox(height: 6),
+                        ],
+                        if (_deliveryFee > 0) ...[
+                          _PriceRow(label: 'Delivery Fee',
+                              value: '£${_deliveryFee.toStringAsFixed(2)}'),
+                          const SizedBox(height: 6),
+                        ],
+                        if (_tax > 0) ...[
+                          _PriceRow(label: 'Tax',
+                              value: '£${_tax.toStringAsFixed(2)}'),
+                          const SizedBox(height: 6),
+                        ],
+                        const Divider(height: 16),
+                        _PriceRow(
+                          label:  'Total',
+                          value:  '£${_total.toStringAsFixed(2)}',
+                          isBold: true,
+                          color:  AppColors.primary,
+                        ),
+                      ]),
+                ),
 
-                      if (_subtotal > 0) ...[
-                        _PriceRow(label: 'Subtotal',
-                            value: '£${_subtotal.toStringAsFixed(2)}'),
-                        const SizedBox(height: 6),
-                      ],
-                      if (_deliveryFee > 0) ...[
-                        _PriceRow(label: 'Delivery Fee',
-                            value: '£${_deliveryFee.toStringAsFixed(2)}'),
-                        const SizedBox(height: 6),
-                      ],
-                      if (_tax > 0) ...[
-                        _PriceRow(label: 'Tax',
-                            value: '£${_tax.toStringAsFixed(2)}'),
-                        const SizedBox(height: 6),
-                      ],
-                      const Divider(height: 16),
-                      _PriceRow(
-                        label:  'Total',
-                        value:  '£${_total.toStringAsFixed(2)}',
-                        isBold: true,
-                        color:  AppColors.primary,
-                      ),
-                    ]),
-                  ),
-
-                  const SizedBox(height: 24),
-                ]),
-              ),
-            ),
+                const SizedBox(height: 24),
+              ]),
+        ),
+      ),
     );
   }
 }
@@ -1113,15 +1256,15 @@ class _ItemRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = (item['productName'] ??
-            item['name'] ??
-            item['product']?['name'] ??
-            'Item')
+        item['name'] ??
+        item['product']?['name'] ??
+        'Item')
         .toString();
     final qty       = ((item['quantity'] ?? 1) as num).toInt();
     final unitPrice = ((item['unitPrice'] ??
-                item['price'] ??
-                item['product']?['price'] ??
-                0) as num)
+        item['price'] ??
+        item['product']?['price'] ??
+        0) as num)
         .toDouble();
     final subtotal    = qty * unitPrice;
     final imgUrl      = item['imageUrl']?.toString() ??
@@ -1129,7 +1272,7 @@ class _ItemRow extends StatelessWidget {
         item['product']?['imageUrl']?.toString() ??
         item['image']?.toString();
     final specialNote =
-        (item['specialInstructions'] ?? '').toString().trim();
+    (item['specialInstructions'] ?? '').toString().trim();
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1152,30 +1295,30 @@ class _ItemRow extends StatelessWidget {
         // Name + note + qty
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-          Text(name,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis),
-          if (specialNote.isNotEmpty) ...[
-            const SizedBox(height: 2),
-            Text('Note: $specialNote',
+              Text(name,
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
+              if (specialNote.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text('Note: $specialNote',
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
+                        fontStyle: FontStyle.italic),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ],
+              const SizedBox(height: 4),
+              Text(
+                '${unitPrice > 0 ? '£${unitPrice.toStringAsFixed(2)} × ' : ''}$qty',
                 style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textSecondary,
-                    fontStyle: FontStyle.italic),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-          ],
-          const SizedBox(height: 4),
-          Text(
-            '${unitPrice > 0 ? '£${unitPrice.toStringAsFixed(2)} × ' : ''}$qty',
-            style: const TextStyle(
-                fontSize: 12, color: AppColors.textSecondary),
-          ),
-        ])),
+                    fontSize: 12, color: AppColors.textSecondary),
+              ),
+            ])),
 
         // Subtotal
         Text(
@@ -1216,20 +1359,20 @@ class _PriceRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: isBold ? 15 : 13,
-                  fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-                  color: AppColors.textPrimary)),
-          Text(value,
-              style: TextStyle(
-                  fontSize: isBold ? 17 : 13,
-                  fontWeight: isBold ? FontWeight.bold : FontWeight.w600,
-                  color: color ?? AppColors.textPrimary)),
-        ],
-      );
+    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    children: [
+      Text(title,
+          style: TextStyle(
+              fontSize: isBold ? 15 : 13,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+              color: AppColors.textPrimary)),
+      Text(value,
+          style: TextStyle(
+              fontSize: isBold ? 17 : 13,
+              fontWeight: isBold ? FontWeight.bold : FontWeight.w600,
+              color: color ?? AppColors.textPrimary)),
+    ],
+  );
 }
 
 // ── Map placeholder ────────────────────────────────────────
@@ -1237,12 +1380,14 @@ class _MapPlaceholder extends StatelessWidget {
   final String statusLabel;
   const _MapPlaceholder({required this.statusLabel});
 
+  // Change 7 — add 'out for delivery' case
   String get _message {
     switch (statusLabel.toLowerCase()) {
-      case 'processing': return 'Order is being prepared';
-      case 'delivered':  return 'Order has been delivered';
-      case 'cancelled':  return 'Order was cancelled';
-      default:           return 'Waiting for driver pickup...';
+      case 'processing':       return 'Order is being prepared';
+      case 'delivered':        return 'Order has been delivered';
+      case 'cancelled':        return 'Order was cancelled';
+      case 'out for delivery': return 'Order is out for delivery';
+      default:                 return 'Waiting for driver pickup...';
     }
   }
 
@@ -1257,12 +1402,12 @@ class _MapPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 300,
-        child: Container(
-          color: AppColors.surfaceLight,
-          child: Center(
-            child: Column(mainAxisAlignment: MainAxisAlignment.center,
-                children: [
+    height: 300,
+    child: Container(
+      color: AppColors.surfaceLight,
+      child: Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center,
+            children: [
               Icon(_icon, size: 60, color: AppColors.primary),
               const SizedBox(height: 12),
               Text(_message,
@@ -1276,9 +1421,9 @@ class _MapPlaceholder extends StatelessWidget {
                 textAlign: TextAlign.center,
               ),
             ]),
-          ),
-        ),
-      );
+      ),
+    ),
+  );
 }
 
 // ── Driver card ────────────────────────────────────────────
@@ -1312,28 +1457,28 @@ class _DriverCard extends StatelessWidget {
         const SizedBox(width: 12),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-          Text(name,
-              style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis),
-          const SizedBox(height: 4),
-          Row(children: [
-            const Icon(Icons.star, size: 13, color: AppColors.warning),
-            const SizedBox(width: 4),
-            Text(trips.isNotEmpty
+              Text(name,
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Icon(Icons.star, size: 13, color: AppColors.warning),
+                const SizedBox(width: 4),
+                Text(trips.isNotEmpty
                     ? '$rating ($trips deliveries)'
                     : rating,
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textSecondary)),
-          ]),
-          const SizedBox(height: 4),
-          Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
-              style: const TextStyle(
-                  fontSize: 11, color: AppColors.textHint)),
-        ])),
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.textSecondary)),
+              ]),
+              const SizedBox(height: 4),
+              Text(plate.isNotEmpty ? '$vehicle • $plate' : vehicle,
+                  style: const TextStyle(
+                      fontSize: 11, color: AppColors.textHint)),
+            ])),
         IconButton(
           icon:      const Icon(Icons.phone, color: AppColors.primary),
           onPressed: () {},
@@ -1390,18 +1535,18 @@ class _Step extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 8, top: 6),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-          Text(title,
-              style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: (active || completed)
-                      ? AppColors.textPrimary
-                      : AppColors.textSecondary)),
-          const SizedBox(height: 3),
-          Text(subtitle,
-              style: const TextStyle(
-                  fontSize: 12, color: AppColors.textSecondary)),
-        ]),
+              Text(title,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: (active || completed)
+                          ? AppColors.textPrimary
+                          : AppColors.textSecondary)),
+              const SizedBox(height: 3),
+              Text(subtitle,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary)),
+            ]),
       )),
     ]);
   }
@@ -1415,17 +1560,17 @@ class _DRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(children: [
-        Icon(icon, size: 17, color: AppColors.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(child: Text(label,
-            style: const TextStyle(
-                fontSize: 13, color: AppColors.textSecondary))),
-        Flexible(child: Text(value,
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary),
-            overflow: TextOverflow.ellipsis)),
-      ]);
+    Icon(icon, size: 17, color: AppColors.textSecondary),
+    const SizedBox(width: 10),
+    Expanded(child: Text(label,
+        style: const TextStyle(
+            fontSize: 13, color: AppColors.textSecondary))),
+    Flexible(child: Text(value,
+        textAlign: TextAlign.right,
+        style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textPrimary),
+        overflow: TextOverflow.ellipsis)),
+  ]);
 }
