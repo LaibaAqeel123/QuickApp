@@ -7,61 +7,55 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-    FlutterLocalNotificationsPlugin();
+FlutterLocalNotificationsPlugin();
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  debugPrint('📱 Background notification: ${message.notification?.title}');
+  debugPrint('Background notification: ${message.notification?.title}');
+}
+
+Future<void> _initNotifications() async {
+  const AndroidInitializationSettings androidSettings =
+  AndroidInitializationSettings('@mipmap/ic_launcher');
+  const InitializationSettings initSettings =
+  InitializationSettings(android: androidSettings);
+  await flutterLocalNotificationsPlugin.initialize(initSettings);
+
+  final plugin = flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+  if (plugin != null) {
+    await plugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'high_importance_channel',
+        'High Importance Notifications',
+        importance: Importance.high,
+      ),
+    );
+  }
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ── Stripe init (must be before runApp) ───────────────
-  Stripe.publishableKey =
-      'pk_test_51TChtMFRpcmxK2pQ84PzPDoZ0mVsQWP7OvJF45rpu6FFM96rf4vekt69ZdXmZTE3DDL2rQ2i5jCIWUlfSnQJusOD00XSG3Xwxm';
-  await Stripe.instance.applySettings();
-
-  // ── Firebase init ──────────────────────────────────────
   try {
     await Firebase.initializeApp();
-    debugPrint('✅ Firebase initialized!');
-
+    debugPrint('Firebase initialized!');
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-    const InitializationSettings initSettings =
-        InitializationSettings(android: androidSettings);
-    await flutterLocalNotificationsPlugin.initialize(initSettings);
-
-    const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      'high_importance_channel',
-      'High Importance Notifications',
-      importance: Importance.high,
-    );
-
-    await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
-
+    await _initNotifications();
     await FirebaseMessaging.instance
         .setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
     );
-
     await FirebaseMessaging.instance.requestPermission(
       alert: true,
       badge: true,
       sound: true,
     );
-
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      debugPrint('📱 Foreground: ${message.notification?.title}');
+      debugPrint('Foreground: ${message.notification?.title}');
       final notification = message.notification;
       if (notification != null) {
         flutterLocalNotificationsPlugin.show(
@@ -80,11 +74,19 @@ void main() async {
         );
       }
     });
-
     final token = await FirebaseMessaging.instance.getToken();
-    debugPrint('🔥 FCM Token: $token');
+    debugPrint('FCM Token: $token');
   } catch (e) {
-    debugPrint('❌ Firebase error: $e');
+    debugPrint('Firebase error: $e');
+  }
+
+  try {
+    Stripe.publishableKey =
+    'pk_test_51TChtMFRpcmxK2pQ84PzPDoZ0mVsQWP7OvJF45rpu6FFM96rf4vekt69ZdXmZTE3DDL2rQ2i5jCIWUlfSnQJusOD00XSG3Xwxm';
+    await Stripe.instance.applySettings();
+    debugPrint('Stripe initialized!');
+  } catch (e) {
+    debugPrint('Stripe error: $e');
   }
 
   runApp(const MyApp());
