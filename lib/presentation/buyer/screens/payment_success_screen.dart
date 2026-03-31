@@ -23,48 +23,31 @@ class PaymentSuccessScreen extends StatefulWidget {
 class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animCtrl;
-  late Animation<double>   _scaleAnim;
-  late Animation<double>   _fadeAnim;
-
-  // Tracks whether cart clear API call is done
-  bool _cartCleared = false;
+  late Animation<double> _scaleAnim;
+  late Animation<double> _fadeAnim;
 
   @override
   void initState() {
     super.initState();
-
     _animCtrl = AnimationController(
-      vsync:    this,
-      duration: const Duration(milliseconds: 700),
-    );
-    _scaleAnim = CurvedAnimation(
-        parent: _animCtrl, curve: Curves.elasticOut);
-    _fadeAnim  = CurvedAnimation(
-        parent: _animCtrl, curve: Curves.easeIn);
+        vsync: this, duration: const Duration(milliseconds: 700));
+    _scaleAnim =
+        CurvedAnimation(parent: _animCtrl, curve: Curves.elasticOut);
+    _fadeAnim =
+        CurvedAnimation(parent: _animCtrl, curve: Curves.easeIn);
     _animCtrl.forward();
 
-    // ── Clear cart immediately on screen load ──────────
-    // We do this as soon as PaymentSuccessScreen mounts so
-    // the API call has maximum time to complete before the
-    // user taps "Back to Home". We update _cartCleared so
-    // _goHome() knows it can skip a second call.
-    _clearCartNow();
+    // Clear cart immediately in background
+    _clearCart();
   }
 
-  Future<void> _clearCartNow() async {
-    debugPrint('\n╔══════════════════════════════════════╗');
-    debugPrint('║  CLEAR CART — on payment success');
-    debugPrint('╚══════════════════════════════════════╝');
-
-    try {
-      final result = await AuthService.instance.clearCartApi();
-      debugPrint(
-          '🛒 [PaymentSuccess] cart clear: success=${result.success}');
-      if (mounted) setState(() => _cartCleared = true);
-    } catch (e) {
-      debugPrint('🛒 [PaymentSuccess] cart clear error (non-fatal): $e');
-      if (mounted) setState(() => _cartCleared = true);
-    }
+  void _clearCart() {
+    AuthService.instance
+        .clearCartApi()
+        .then((r) =>
+            debugPrint('🛒 [PaySuccess] cart clear success=${r.success}'))
+        .catchError((e) =>
+            debugPrint('🛒 [PaySuccess] cart clear error (ignored): $e'));
   }
 
   @override
@@ -83,84 +66,54 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
   Map<String, dynamic> get _orderMap {
     final base = Map<String, dynamic>.from(widget.orderData ?? {});
     if (widget.orderId.isNotEmpty) {
-      base['id']          = widget.orderId;
-      base['orderId']     = widget.orderId;
+      base['id'] = widget.orderId;
+      base['orderId'] = widget.orderId;
       base['orderNumber'] = widget.orderId;
     }
     return base;
   }
 
+  // ── KEY FIX ───────────────────────────────────────────────
+  // Old code did pushReplacement → OrderTrackingScreen.
+  // When the user pressed Back they landed on whatever was
+  // below PaymentSuccessScreen — NOT a fresh BuyerMainScreen.
+  //
+  // New approach:
+  // 1. Remove ALL routes from the stack.
+  // 2. Push a fresh BuyerMainScreen(reloadCart: true) as root.
+  // 3. Push OrderTrackingScreen on top of it.
+  //
+  // Now pressing Back from tracking always lands on a clean
+  // BuyerMainScreen whose cart is already empty.
+  // ─────────────────────────────────────────────────────────
   void _goToTracking() {
-    Navigator.pushReplacement(
-      context,
+    final orderMap = _orderMap;
+
+    // Step 1 + 2: wipe stack, push fresh BuyerMainScreen as new root
+    Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
-          builder: (_) => OrderTrackingScreen(order: _orderMap)),
+        builder: (_) => const BuyerMainScreen(reloadCart: true),
+      ),
+      (route) => false,
     );
+
+    // Step 3: push OrderTrackingScreen on top.
+    // Use addPostFrameCallback so BuyerMainScreen is fully
+    // mounted before we push on top of it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => OrderTrackingScreen(order: orderMap),
+        ),
+      );
+    });
   }
 
-  // ══════════════════════════════════════════════════════
-  //  GO HOME
-  //
-  //  FIX: Cart was showing stale items because:
-  //  1. clearCartApi() was fire-and-forget — navigation
-  //     happened before the API responded.
-  //  2. CartScreen rendered from cached state on arrival.
-  //
-  //  Solution:
-  //  - If cart clear already finished (_cartCleared=true),
-  //    navigate immediately.
-  //  - If still in progress, show a brief loader and await
-  //    it (max 3s timeout so UX never hangs).
-  //  - Navigate to BuyerMainScreen with reloadCart=true so
-  //    CartScreen.reload() is called right on arrival,
-  //    guaranteeing fresh empty state even if clear API
-  //    was slow.
-  // ══════════════════════════════════════════════════════
-  Future<void> _goHome() async {
-    // If cart clear hasn't finished yet, wait up to 3 seconds
-    if (!_cartCleared) {
-      debugPrint('🛒 [GoHome] Cart clear still in progress — waiting...');
-
-      // Show brief loading indicator
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Row(children: [
-            SizedBox(
-              width:  16,
-              height: 16,
-              child:  CircularProgressIndicator(
-                  color: Colors.white, strokeWidth: 2),
-            ),
-            SizedBox(width: 12),
-            Text('Finalising order...'),
-          ]),
-          duration: Duration(seconds: 3),
-          backgroundColor: AppColors.primary,
-        ));
-      }
-
-      // Wait up to 3 seconds for cart clear to finish
-      for (int i = 0; i < 30 && !_cartCleared; i++) {
-        await Future.delayed(const Duration(milliseconds: 100));
-      }
-      debugPrint(
-          '🛒 [GoHome] Done waiting. cartCleared=$_cartCleared');
-    }
-
-    if (!mounted) return;
-
-    // Dismiss any snackbar
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-    debugPrint('🛒 [GoHome] Navigating to BuyerMainScreen '
-        'with reloadCart=true');
-
-    // Navigate to BuyerMainScreen — pass reloadCart flag so
-    // CartScreen.reload() fires immediately on arrival.
-    Navigator.pushAndRemoveUntil(
-      context,
+  void _goHome() {
+    Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
-          builder: (_) => const BuyerMainScreen(reloadCart: true)),
+        builder: (_) => const BuyerMainScreen(reloadCart: true),
+      ),
       (route) => false,
     );
   }
@@ -181,30 +134,29 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
               ScaleTransition(
                 scale: _scaleAnim,
                 child: Container(
-                  width:  120,
+                  width: 120,
                   height: 120,
                   decoration: BoxDecoration(
-                    color:  AppColors.success.withOpacity(0.12),
-                    shape:  BoxShape.circle,
-                    border: Border.all(
-                        color: AppColors.success, width: 3),
+                    color: AppColors.success.withOpacity(0.12),
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: AppColors.success, width: 3),
                   ),
                   child: const Icon(
                     Icons.check_rounded,
                     color: AppColors.success,
-                    size:  64,
+                    size: 64,
                   ),
                 ),
               ),
               const SizedBox(height: 28),
 
-              // ── Title ────────────────────────────────
               const Text(
                 'Payment Successful!',
                 style: TextStyle(
-                  fontSize:   26,
+                  fontSize: 26,
                   fontWeight: FontWeight.bold,
-                  color:      AppColors.textPrimary,
+                  color: AppColors.textPrimary,
                 ),
               ),
               const SizedBox(height: 10),
@@ -213,8 +165,8 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 15,
-                  color:    AppColors.textSecondary,
-                  height:   1.5,
+                  color: AppColors.textSecondary,
+                  height: 1.5,
                 ),
               ),
               const SizedBox(height: 32),
@@ -223,22 +175,22 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color:        AppColors.surface,
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(16),
-                  border:       Border.all(color: AppColors.border),
+                  border: Border.all(color: AppColors.border),
                   boxShadow: [
                     BoxShadow(
-                      color:      Colors.black.withOpacity(0.05),
+                      color: Colors.black.withOpacity(0.05),
                       blurRadius: 10,
-                      offset:     const Offset(0, 4),
+                      offset: const Offset(0, 4),
                     ),
                   ],
                 ),
                 child: Column(children: [
-                  _DetailRow('Order ID',
-                      widget.orderId.isNotEmpty
-                          ? '#$_shortOrderId'
-                          : '—'),
+                  _DetailRow(
+                    'Order ID',
+                    widget.orderId.isNotEmpty ? '#$_shortOrderId' : '—',
+                  ),
                   const Divider(height: 20),
                   _DetailRow('Amount Paid',
                       '£${widget.orderTotal.toStringAsFixed(2)}'),
@@ -251,7 +203,7 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
               ),
               const SizedBox(height: 28),
 
-              // ── What's next card ─────────────────────
+              // ── What's next ──────────────────────────
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -267,9 +219,9 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
                     SizedBox(width: 8),
                     Text("What's next?",
                         style: TextStyle(
-                          fontSize:   14,
+                          fontSize: 14,
                           fontWeight: FontWeight.bold,
-                          color:      AppColors.primary,
+                          color: AppColors.primary,
                         )),
                   ]),
                   const SizedBox(height: 10),
@@ -287,16 +239,15 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
 
               // ── Track Order ──────────────────────────
               SizedBox(
-                width:  double.infinity,
+                width: double.infinity,
                 height: 54,
                 child: ElevatedButton.icon(
                   onPressed: _goToTracking,
-                  icon:  const Icon(Icons.local_shipping_outlined),
+                  icon: const Icon(Icons.local_shipping_outlined),
                   label: const Text(
                     'Track My Order',
                     style: TextStyle(
-                        fontSize:   16,
-                        fontWeight: FontWeight.bold),
+                        fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
@@ -310,20 +261,19 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
 
               // ── Back to Home ─────────────────────────
               SizedBox(
-                width:  double.infinity,
+                width: double.infinity,
                 height: 54,
                 child: OutlinedButton.icon(
                   onPressed: _goHome,
-                  icon:  const Icon(Icons.home_outlined),
+                  icon: const Icon(Icons.home_outlined),
                   label: const Text(
                     'Back to Home',
                     style: TextStyle(
-                        fontSize:   16,
-                        fontWeight: FontWeight.w600),
+                        fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.primary,
-                    side:  const BorderSide(color: AppColors.primary),
+                    side: const BorderSide(color: AppColors.primary),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14)),
                   ),
@@ -338,7 +288,6 @@ class _PaymentSuccessScreenState extends State<PaymentSuccessScreen>
   }
 }
 
-// ── Detail row ─────────────────────────────────────────────
 class _DetailRow extends StatelessWidget {
   final String label, value;
   final Color? valueColor;
@@ -352,14 +301,13 @@ class _DetailRow extends StatelessWidget {
                 fontSize: 14, color: AppColors.textSecondary)),
         Text(value,
             style: TextStyle(
-              fontSize:   14,
+              fontSize: 14,
               fontWeight: FontWeight.w600,
-              color:      valueColor ?? AppColors.textPrimary,
+              color: valueColor ?? AppColors.textPrimary,
             )),
       ]);
 }
 
-// ── Next step row ───────────────────────────────────────────
 class _NextStep extends StatelessWidget {
   final String step, text;
   const _NextStep(this.step, this.text);
@@ -367,17 +315,16 @@ class _NextStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(children: [
         Container(
-          width:     22,
-          height:    22,
+          width: 22,
+          height: 22,
           alignment: Alignment.center,
           decoration: const BoxDecoration(
               color: AppColors.primary, shape: BoxShape.circle),
           child: Text(step,
               style: const TextStyle(
-                fontSize:   11,
-                fontWeight: FontWeight.bold,
-                color:      AppColors.white,
-              )),
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.white)),
         ),
         const SizedBox(width: 10),
         Expanded(
