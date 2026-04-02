@@ -6,20 +6,11 @@ import 'package:food_delivery_app/presentation/buyer/screens/address_bottom_shee
 import 'package:food_delivery_app/presentation/buyer/screens/map_location_picker_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/payment_screen.dart';
 
-// ══════════════════════════════════════════════════════════
-//  CheckoutScreen
-//
-//  IMPORTANT — deliveryFee passed in here is already the
-//  confirmed total fee (base × stores) because the user
-//  accepted the multi-store popup in CartScreen before
-//  navigating here.  We never recalculate it; we just
-//  display and forward it as-is to PaymentScreen.
-// ══════════════════════════════════════════════════════════
 class CheckoutScreen extends StatefulWidget {
   final List<Map<String, dynamic>> cartItems;
   final double subtotal;
-  final double deliveryFee;   // confirmed total fee (base × stores)
-  final double total;         // subtotal + deliveryFee
+  final double deliveryFee;
+  final double total;
   final Map<String, dynamic>? cartMeta;
 
   const CheckoutScreen({
@@ -39,6 +30,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   List<Map<String, dynamic>> _addresses          = [];
   Map<String, dynamic>?      _selectedAddress;
   bool                       _isLoadingAddresses = true;
+  // INCOMING: track whether address came from map picker
   bool                       _isMapPickedAddress = false;
 
   final _instructionsCtrl  = TextEditingController();
@@ -59,6 +51,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.dispose();
   }
 
+  // ── Load addresses ─────────────────────────────────────
   Future<void> _loadAddresses() async {
     setState(() => _isLoadingAddresses = true);
     final result = await AuthService.instance.getAddresses();
@@ -109,69 +102,67 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  // INCOMING: map location picker — saves address via API then selects it
   Future<void> _pickLocationFromMap() async {
     final picked = await Navigator.push<Map<String, dynamic>>(
       context,
       MaterialPageRoute(builder: (_) => const MapLocationPickerScreen()),
     );
 
-    if (picked != null && mounted) {
-      setState(() => _isLoadingAddresses = true);
+    if (picked == null || !mounted) return;
+    setState(() => _isLoadingAddresses = true);
 
-      final saveResult = await AuthService.instance.createAddress(
-        streetAddress: picked['streetAddress'] as String? ?? '',
-        apartment:     picked['apartment']     as String? ?? '',
-        city:          picked['city']          as String? ?? '',
-        state:         picked['state']         as String? ?? '',
-        postalCode:    picked['postalCode']    as String? ?? '',
-        country:       picked['country']       as String? ?? 'UK',
-        addressType:   picked['addressType']   as int?    ?? 2,
-        isDefault:     false,
-        label:         'Current Location',
-        latitude:      picked['latitude']      as double? ?? 0.0,
-        longitude:     picked['longitude']     as double? ?? 0.0,
-      );
+    final saveResult = await AuthService.instance.createAddress(
+      streetAddress: picked['streetAddress'] as String? ?? '',
+      apartment:     picked['apartment']     as String? ?? '',
+      city:          picked['city']          as String? ?? '',
+      state:         picked['state']         as String? ?? '',
+      postalCode:    picked['postalCode']    as String? ?? '',
+      country:       picked['country']       as String? ?? 'UK',
+      addressType:   picked['addressType']   as int?    ?? 2,
+      isDefault:     false,
+      label:         'Current Location',
+      latitude:      picked['latitude']      as double? ?? 0.0,
+      longitude:     picked['longitude']     as double? ?? 0.0,
+    );
 
-      if (!mounted) return;
+    if (!mounted) return;
 
-      if (saveResult.success && saveResult.data != null) {
-        setState(() {
-          _selectedAddress    = saveResult.data;
-          _isMapPickedAddress = true;
-          _isLoadingAddresses = false;
-        });
-        _loadAddresses().then((_) {
-          if (mounted && _selectedAddress != null) {
-            final savedId =
-                saveResult.data!['id'] ?? saveResult.data!['addressId'];
-            if (savedId != null) {
-              final match = _addresses.firstWhere(
-                (a) =>
-                    (a['id'] ?? a['addressId']).toString() ==
-                    savedId.toString(),
-                orElse: () => <String, dynamic>{},
-              );
-              if (match.isNotEmpty) {
-                setState(() {
-                  _selectedAddress    = match;
-                  _isMapPickedAddress = true;
-                });
-              }
-            }
-          }
-        });
-      } else {
-        setState(() {
-          _selectedAddress    = picked;
-          _isMapPickedAddress = true;
-          _isLoadingAddresses = false;
-        });
-        _snack(
-          'Location selected but could not be saved. '
-          'Please add it manually if checkout fails.',
-          isError: false,
+    if (saveResult.success && saveResult.data != null) {
+      setState(() {
+        _selectedAddress    = saveResult.data;
+        _isMapPickedAddress = true;
+        _isLoadingAddresses = false;
+      });
+      // Refresh address list and re-select the saved one
+      _loadAddresses().then((_) {
+        if (!mounted || _selectedAddress == null) return;
+        final savedId =
+            saveResult.data!['id'] ?? saveResult.data!['addressId'];
+        if (savedId == null) return;
+        final match = _addresses.firstWhere(
+          (a) => (a['id'] ?? a['addressId']).toString() == savedId.toString(),
+          orElse: () => <String, dynamic>{},
         );
-      }
+        if (match.isNotEmpty && mounted) {
+          setState(() {
+            _selectedAddress    = match;
+            _isMapPickedAddress = true;
+          });
+        }
+      });
+    } else {
+      // Fallback: use the raw map pick without a backend addressId
+      setState(() {
+        _selectedAddress    = picked;
+        _isMapPickedAddress = true;
+        _isLoadingAddresses = false;
+      });
+      _snack(
+        'Location selected but could not be saved. '
+        'Please add it manually if checkout fails.',
+        isError: false,
+      );
     }
   }
 
@@ -180,11 +171,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ?.toString();
 
   String _formatAddress(Map<String, dynamic> a) => [
-        if ((a['streetAddress'] ?? '').toString().isNotEmpty)
-          a['streetAddress'],
-        if ((a['apartment'] ?? '').toString().isNotEmpty) a['apartment'],
-        if ((a['city'] ?? '').toString().isNotEmpty) a['city'],
-        if ((a['postalCode'] ?? '').toString().isNotEmpty) a['postalCode'],
+        if ((a['streetAddress'] ?? '').toString().isNotEmpty) a['streetAddress'],
+        if ((a['apartment']     ?? '').toString().isNotEmpty) a['apartment'],
+        if ((a['city']          ?? '').toString().isNotEmpty) a['city'],
+        if ((a['postalCode']    ?? '').toString().isNotEmpty) a['postalCode'],
       ].join(', ');
 
   String _addressLabel(Map<String, dynamic> a) {
@@ -204,15 +194,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
+  // ── Deep order-id extractor ────────────────────────────
   String? _extractOrderId(Map<String, dynamic>? data) {
     if (data == null) return null;
     const keys = [
       'orderId', 'OrderId', 'id', 'Id',
       'orderNumber', 'OrderNumber', 'order_id'
     ];
+
     for (final k in keys) {
       final v = data[k];
       if (v != null && v.toString().isNotEmpty && v.toString() != 'null') {
+        debugPrint('✅ [orderId] top "$k": $v');
         return v.toString();
       }
     }
@@ -223,14 +216,21 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         if (v != null && v.toString().isNotEmpty) return v.toString();
       }
     }
+    final arr = data['orders'];
+    if (arr is List && arr.isNotEmpty && arr.first is Map<String, dynamic>) {
+      final first = arr.first as Map<String, dynamic>;
+      for (final k in keys) {
+        final v = first[k];
+        if (v != null && v.toString().isNotEmpty) return v.toString();
+      }
+    }
     String? deep(dynamic node, int depth) {
       if (depth > 5) return null;
       if (node is Map<String, dynamic>) {
         for (final k in keys) {
           final v = node[k];
-          if (v != null &&
-              v.toString().isNotEmpty &&
-              v.toString() != 'null') return v.toString();
+          if (v != null && v.toString().isNotEmpty && v.toString() != 'null')
+            return v.toString();
         }
         for (final e in node.entries) {
           final f = deep(e.value, depth + 1);
@@ -244,16 +244,105 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       }
       return null;
     }
-    return deep(data, 0);
+
+    final d = deep(data, 0);
+    // INCOMING: debug print on not found
+    if (d == null) debugPrint('❌ [orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    return d;
   }
 
+  // ══════════════════════════════════════════════════════
+  //  PLACE ORDER
+  //
+  //  CURRENT flow kept:
+  //    1. Validate address
+  //    2. INCOMING: warn if multi-supplier
+  //    3. Call checkout API → get orderId
+  //    4. Navigate to PaymentScreen with orderId
+  //
+  //  INCOMING's flow (skip checkout, pass address to PaymentScreen)
+  //  was REJECTED because PaymentScreen needs the orderId from
+  //  the checkout API response to create a Stripe PaymentIntent.
+  // ══════════════════════════════════════════════════════
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
       _snack('Please select a delivery address to continue.', isError: true);
       return;
     }
+
+    // INCOMING: multi-supplier warning dialog
+    final supplierIds = widget.cartItems
+        .map((i) => (i['supplierId'] ?? i['supplier']?['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    if (supplierIds.length > 1) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.store, color: AppColors.primary, size: 22),
+            ),
+            const SizedBox(width: 12),
+            const Text('Multiple Suppliers'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              'You are ordering from ${supplierIds.length} suppliers.',
+              style: const TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
+              ),
+              child: const Row(children: [
+                Icon(Icons.info_outline, color: AppColors.warning, size: 18),
+                SizedBox(width: 8),
+                Expanded(child: Text(
+                  'Each supplier handles their own delivery separately. '
+                  'A delivery fee is charged per supplier.',
+                  style: TextStyle(fontSize: 13, color: AppColors.textPrimary),
+                )),
+              ]),
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Go Back')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+
     setState(() => _isPlacingOrder = true);
 
+    // CURRENT: call checkout API to get orderId for Stripe
     final result = await AuthService.instance.checkout(
       deliveryAddressId:   _deliveryAddressId!,
       billingAddressId:    _deliveryAddressId!,
@@ -269,11 +358,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     if (result.success) {
       final data    = result.data as Map<String, dynamic>?;
       final orderId = _extractOrderId(data);
-
-      // FIX: The warningMessage dialog has been intentionally removed here.
-      // The multi-supplier delivery fee breakdown is already shown and
-      // confirmed by the user via the popup in CartScreen before they reach
-      // this screen.  Showing it again here is redundant and disruptive.
+      debugPrint('🛒 [Checkout] orderId: "$orderId"');
 
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -281,8 +366,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         MaterialPageRoute(
           builder: (_) => PaymentScreen(
             orderId:    orderId ?? '',
-            // widget.total already includes the confirmed full delivery fee
-            // (base × stores) set before navigation from CartScreen.
             orderTotal: widget.total,
             orderData:  data,
           ),
@@ -301,6 +384,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         duration:        const Duration(seconds: 4),
       ));
 
+  // ══════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -318,7 +404,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
 
-              // ── 1. Delivery Address ───────────────────
+              // ── 1. Delivery Address ─────────────────────
               _Section(
                 title: 'Delivery Address',
                 icon:  Icons.location_on,
@@ -344,13 +430,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               onAdd:        _addNewAddress,
                             ),
                           const SizedBox(height: 12),
+                          // INCOMING: use current location button
                           _UseLocationButton(onTap: _pickLocationFromMap),
                         ],
                       ),
               ),
               const SizedBox(height: 16),
 
-              // ── 2. Special Instructions ───────────────
+              // ── 2. Special Instructions ─────────────────
               _Section(
                 title: 'Special Instructions',
                 icon:  Icons.note_alt_outlined,
@@ -364,7 +451,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 3. Discount Code ──────────────────────
+              // ── 3. Discount Code ────────────────────────
               _Section(
                 title: 'Discount Code',
                 icon:  Icons.local_offer_outlined,
@@ -391,8 +478,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     onPressed: () {
                       final code = _discountCtrl.text.trim();
                       if (code.isEmpty) {
-                        _snack('Please enter a discount code.',
-                            isError: true);
+                        _snack('Please enter a discount code.', isError: true);
                         return;
                       }
                       setState(() => _isDiscountApplied = true);
@@ -408,15 +494,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 4. Order Summary ──────────────────────
+              // ── 4. Order Summary ────────────────────────
               _Section(
                 title: 'Order Summary',
                 icon:  Icons.receipt,
                 child: Column(children: [
                   ...widget.cartItems.take(3).map((item) {
                     final name  = (item['productName'] ??
-                            item['product']?['name'] ?? 'Product')
-                        .toString();
+                            item['product']?['name'] ?? 'Product').toString();
                     final qty   = ((item['quantity'] ?? 0) as num).toInt();
                     final price = ((item['unitPrice'] ??
                                 item['price'] ??
@@ -450,8 +535,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       child: Text(
                         '+ ${widget.cartItems.length - 3} more items',
                         style: const TextStyle(
-                            fontSize: 13,
-                            color:    AppColors.textSecondary),
+                            fontSize: 13, color: AppColors.textSecondary),
                       ),
                     ),
                   const Divider(height: 24),
@@ -472,8 +556,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           const SizedBox(width: 4),
                           Text('Code: ${_discountCtrl.text.trim()}',
                               style: const TextStyle(
-                                  fontSize: 13,
-                                  color:    AppColors.success)),
+                                  fontSize: 13, color: AppColors.success)),
                         ]),
                         const Text('Applied ✓',
                             style: TextStyle(
@@ -484,14 +567,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ],
                   const Divider(height: 24),
-                  _SummRow('Total',
-                      '£${widget.total.toStringAsFixed(2)}',
+                  _SummRow('Total', '£${widget.total.toStringAsFixed(2)}',
                       bold: true),
                 ]),
               ),
               const SizedBox(height: 24),
 
-              // ── Proceed to Payment ────────────────────
+              // ── Proceed to Payment ──────────────────────
               SizedBox(
                 height: 56,
                 child: ElevatedButton(
@@ -542,8 +624,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   SizedBox(width: 4),
                   Text('Secured by Stripe',
                       style: TextStyle(
-                          fontSize: 12,
-                          color:    AppColors.textSecondary)),
+                          fontSize: 12, color: AppColors.textSecondary)),
                 ]),
               ),
               const SizedBox(height: 32),
@@ -557,93 +638,66 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   InputDecoration _inputDeco(String hint) => InputDecoration(
         hintText:  hint,
         hintStyle: const TextStyle(color: AppColors.textHint),
-        filled:    true,
-        fillColor: AppColors.background,
+        filled:    true, fillColor: AppColors.background,
         contentPadding: const EdgeInsets.all(12),
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: AppColors.border)),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: AppColors.border)),
-        focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide:
-                const BorderSide(color: AppColors.primary, width: 1.5)),
+        border:        OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
       );
 }
 
 // ══════════════════════════════════════════════════════════
-//  Use Current Location Button
+//  INCOMING: Use Current Location button
 // ══════════════════════════════════════════════════════════
 class _UseLocationButton extends StatelessWidget {
   final VoidCallback onTap;
   const _UseLocationButton({required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color:        AppColors.primary.withOpacity(0.07),
-          borderRadius: BorderRadius.circular(12),
-          border:       Border.all(
-            color: AppColors.primary.withOpacity(0.35),
-            width: 1.2,
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color:        AppColors.primary.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(12),
+            border:       Border.all(
+                color: AppColors.primary.withOpacity(0.35), width: 1.2),
           ),
-        ),
-        child: Row(
-          children: [
+          child: Row(children: [
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color:        AppColors.primary.withOpacity(0.12),
+                color: AppColors.primary.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(Icons.my_location,
                   color: AppColors.primary, size: 18),
             ),
             const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Use Current Location',
-                    style: TextStyle(
-                        fontSize:   14,
-                        fontWeight: FontWeight.w700,
-                        color:      AppColors.primary),
-                  ),
-                  Text(
-                    'Pick on map & auto-fill address',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color:    AppColors.primary.withOpacity(0.7)),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right,
-                color: AppColors.primary, size: 20),
-          ],
+              Text('Use Current Location',
+                  style: TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700,
+                      color: AppColors.primary)),
+              Text('Pick on map & auto-fill address',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.primary.withOpacity(0.7))),
+            ])),
+            Icon(Icons.chevron_right, color: AppColors.primary, size: 20),
+          ]),
         ),
-      ),
-    );
-  }
+      );
 }
 
 // ══════════════════════════════════════════════════════════
-//  Reusable widgets
+//  REUSABLE WIDGETS
 // ══════════════════════════════════════════════════════════
-
 class _Section extends StatelessWidget {
   final String title; final IconData icon; final Widget child;
-  const _Section(
-      {required this.title, required this.icon, required this.child});
-
+  const _Section({required this.title, required this.icon, required this.child});
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.all(16),
@@ -651,37 +705,26 @@ class _Section extends StatelessWidget {
             color:        AppColors.surface,
             borderRadius: BorderRadius.circular(16),
             border:       Border.all(color: AppColors.border)),
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Icon(icon, size: 20, color: AppColors.primary),
             const SizedBox(width: 8),
-            Text(title,
-                style: const TextStyle(
-                    fontSize:   16,
-                    fontWeight: FontWeight.bold,
-                    color:      AppColors.textPrimary)),
+            Text(title, style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary)),
           ]),
           const SizedBox(height: 16),
           child,
-        ]),
-      );
+        ]));
 }
 
+// INCOMING: enhanced AddressTile with isMapPicked support
 class _AddressTile extends StatelessWidget {
-  final String label, address;
-  final IconData icon;
-  final bool isDefault, isMapPicked;
-  final VoidCallback onChange;
+  final String label, address; final IconData icon;
+  final bool isDefault, isMapPicked; final VoidCallback onChange;
   const _AddressTile({
-    required this.label,
-    required this.address,
-    required this.icon,
-    required this.isDefault,
-    required this.isMapPicked,
-    required this.onChange,
-  });
+    required this.label, required this.address, required this.icon,
+    required this.isDefault, required this.isMapPicked, required this.onChange});
 
   @override
   Widget build(BuildContext context) =>
@@ -694,65 +737,46 @@ class _AddressTile extends StatelessWidget {
                   : AppColors.primary.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10)),
           child: Icon(icon,
-              color: isMapPicked ? Colors.blue : AppColors.primary,
-              size: 22),
+              color: isMapPicked ? Colors.blue : AppColors.primary, size: 22),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-            Wrap(
-              spacing:    6,
-              runSpacing: 4,
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Wrap(spacing: 6, runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                      fontSize:   15,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary),
-                ),
-                if (isMapPicked)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                        color: Colors.blue.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(4)),
-                    child: const Text('📍 Map Pick',
-                        style: TextStyle(
-                            fontSize:   10,
-                            fontWeight: FontWeight.w600,
-                            color:      Colors.blue)),
-                  )
-                else if (isDefault)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                        color: AppColors.success.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(4)),
-                    child: const Text('Default',
-                        style: TextStyle(
-                            fontSize:   10,
-                            fontWeight: FontWeight.w600,
-                            color:      AppColors.success)),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(address,
-                style: const TextStyle(
-                    fontSize: 13,
-                    color:    AppColors.textSecondary)),
+            Text(label, style: const TextStyle(
+                fontSize: 15, fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary)),
+            if (isMapPicked)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4)),
+                child: const Text('📍 Map Pick', style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.w600,
+                    color: Colors.blue)),
+              )
+            else if (isDefault)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4)),
+                child: const Text('Default', style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.w600,
+                    color: AppColors.success)),
+              ),
           ]),
-        ),
+          const SizedBox(height: 4),
+          Text(address, style: const TextStyle(
+              fontSize: 13, color: AppColors.textSecondary)),
+        ])),
         TextButton(
           onPressed: onChange,
           style: TextButton.styleFrom(
-            padding:     const EdgeInsets.symmetric(horizontal: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             minimumSize: const Size(0, 0),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
@@ -762,13 +786,8 @@ class _AddressTile extends StatelessWidget {
 }
 
 class _NoAddress extends StatelessWidget {
-  final bool hasAddresses;
-  final VoidCallback onSelect, onAdd;
-  const _NoAddress(
-      {required this.hasAddresses,
-      required this.onSelect,
-      required this.onAdd});
-
+  final bool hasAddresses; final VoidCallback onSelect, onAdd;
+  const _NoAddress({required this.hasAddresses, required this.onSelect, required this.onAdd});
   @override
   Widget build(BuildContext context) =>
       Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -777,17 +796,12 @@ class _NoAddress extends StatelessWidget {
           decoration: BoxDecoration(
               color: AppColors.warning.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10),
-              border:
-                  Border.all(color: AppColors.warning.withOpacity(0.3))),
+              border: Border.all(color: AppColors.warning.withOpacity(0.3))),
           child: Row(children: [
-            Icon(Icons.warning_amber_rounded,
-                color: AppColors.warning, size: 20),
+            Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 20),
             const SizedBox(width: 8),
-            const Expanded(
-              child: Text('No delivery address selected.',
-                  style: TextStyle(
-                      fontSize: 13, color: AppColors.textPrimary)),
-            ),
+            const Expanded(child: Text('No delivery address selected.',
+                style: TextStyle(fontSize: 13, color: AppColors.textPrimary))),
           ]),
         ),
         const SizedBox(height: 12),
@@ -805,39 +819,30 @@ class _NoAddress extends StatelessWidget {
 }
 
 class _Loading extends StatelessWidget {
-  final String label;
-  const _Loading({required this.label});
-
+  final String label; const _Loading({required this.label});
   @override
   Widget build(BuildContext context) => Row(children: [
-        const SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2)),
-        const SizedBox(width: 12),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 14, color: AppColors.textSecondary)),
-      ]);
+    const SizedBox(width: 20, height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2)),
+    const SizedBox(width: 12),
+    Text(label, style: const TextStyle(
+        fontSize: 14, color: AppColors.textSecondary)),
+  ]);
 }
 
 class _SummRow extends StatelessWidget {
-  final String title, value;
-  final bool bold;
+  final String title, value; final bool bold;
   const _SummRow(this.title, this.value, {this.bold = false});
-
   @override
   Widget build(BuildContext context) =>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(title,
-            style: TextStyle(
-                fontSize:   bold ? 16 : 14,
-                fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-                color:      AppColors.textPrimary)),
-        Text(value,
-            style: TextStyle(
-                fontSize:   bold ? 18 : 15,
-                fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-                color: bold ? AppColors.primary : AppColors.textPrimary)),
+        Text(title, style: TextStyle(
+            fontSize: bold ? 16 : 14,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            color: AppColors.textPrimary)),
+        Text(value, style: TextStyle(
+            fontSize: bold ? 18 : 15,
+            fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+            color: bold ? AppColors.primary : AppColors.textPrimary)),
       ]);
 }

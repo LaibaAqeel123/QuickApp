@@ -106,7 +106,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         case 3: return 'Processing';
         case 4: return 'Sent to Driver';
         case 5: return 'Delivered';
-        case 6: return 'Completed';
+        case 6: return 'Delivered';
         case 7: return 'Cancelled';
         case 8: return 'Out for Delivery';
       }
@@ -232,9 +232,14 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
 
   bool _isAtLeast(String min) {
     const order = ['processing', 'out for delivery', 'delivered'];
-    final cur   = order.indexOf(_statusLabel.toLowerCase());
-    final m     = order.indexOf(min.toLowerCase());
-    return cur >= m && cur != -1;
+    var curLabel = _statusLabel.toLowerCase();
+    if (curLabel == 'completed' || curLabel == 'sent to driver') {
+      curLabel = 'processing';
+    }
+    final cur = order.indexOf(curLabel);
+    final m   = order.indexOf(min.toLowerCase());
+    if (cur == -1 || m == -1) return false;
+    return cur >= m;
   }
 
   // Change 3 — _computeDriverEnRoute — supplier delivery should NOT trigger map
@@ -1067,20 +1072,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                             active: false,
                             icon: Icons.check_circle),
                         _Step(
-                            title:    'Order Confirmed',
-                            subtitle: 'Confirmed by supplier',
-                            completed: _isAtLeast('processing'),
-                            active: false,
-                            icon: Icons.verified),
-                        _Step(
-                            title: _statusLabel.toLowerCase() == 'processing'
-                                ? 'Preparing Order'
-                                : 'Order Prepared',
-                            subtitle:  'Being prepared by supplier',
-                            completed: _isAtLeast('out for delivery'),
-                            active:    _statusLabel.toLowerCase() == 'processing',
-                            icon: Icons.inventory_2),
-                        _Step(
                             title:    'Out for Delivery',
                             subtitle: 'Driver is on the way',
                             completed: _statusLabel.toLowerCase() == 'delivered',
@@ -1090,6 +1081,19 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                             title:    'Delivered',
                             subtitle: 'Order has been delivered',
                             completed: _statusLabel.toLowerCase() == 'delivered',
+                            active: false,
+                            icon: Icons.check_circle,
+                            isLast: true),
+                        _Step(
+                            title:    'Out for Delivery',
+                            subtitle: 'Driver is on the way',
+                            completed: _isAtLeast('delivered'),
+                            active:    _statusLabel.toLowerCase() == 'out for delivery',
+                            icon: Icons.local_shipping),
+                        _Step(
+                            title:    'Delivered',
+                            subtitle: 'Order has been delivered',
+                            completed: _isAtLeast('delivered'),
                             active: false,
                             icon: Icons.check_circle,
                             isLast: true),

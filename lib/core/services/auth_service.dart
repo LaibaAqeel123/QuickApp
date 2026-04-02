@@ -33,6 +33,7 @@ class ApiConstants {
   static const String ordersCheckout      = '$baseUrl/api/orders/checkout';
   static const String myOrders            = '$baseUrl/api/orders/my';
   static String myOrderById(String id)    => '$baseUrl/api/orders/my/$id';
+
   static String cancelOrder(String id)    => '$baseUrl/api/orders/my/$id/cancel';
   static const String myOrdersAnalytics   = '$baseUrl/api/orders/my/analytics';
 
@@ -1668,6 +1669,26 @@ class AuthService {
     } on Exception catch (e) {
       return ApiResult(success: false,
           message: _friendlyNetworkError(e.toString()));
+    }
+  }
+  Future<ApiResult<List<dynamic>>> getOrdersByGroupId(String groupOrderId) async {
+    try {
+      final url = '${ApiConstants.baseUrl}/api/orders/my/group/$groupOrderId';
+      _log('GET GROUP ORDERS REQUEST', url);
+      final response = await http
+          .get(Uri.parse(url), headers: await _authHeaders)
+          .timeout(const Duration(seconds: 30));
+      _log('GET GROUP ORDERS RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        final decoded = _safeJsonDecodeAny(response.body);
+        if (decoded is List) return ApiResult(success: true, data: decoded);
+        return const ApiResult(success: true, data: []);
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 
