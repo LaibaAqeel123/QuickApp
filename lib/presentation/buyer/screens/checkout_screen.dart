@@ -186,7 +186,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
     final d = deep(data, 0);
     if (d != null) return d;
-    debugPrint('❌ [orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    debugPrint('[orderId] NOT FOUND. Keys: ${data.keys.toList()}');
     return null;
   }
 
@@ -205,69 +205,95 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           isError: true);
       return;
     }
-    setState(() => _isPlacingOrder = true);
 
-    final result = await AuthService.instance.checkout(
-      deliveryAddressId:   _deliveryAddressId!,
-      billingAddressId:    _deliveryAddressId!,
-      specialInstructions: _instructionsCtrl.text.trim(),
-      discountCode: _discountCtrl.text.trim().isEmpty
-          ? null
-          : _discountCtrl.text.trim(),
-    );
+    // Count unique suppliers in cart
+    final supplierIds = widget.cartItems
+        .map((i) => (i['supplierId'] ?? i['supplier']?['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toSet();
 
-    if (!mounted) return;
-    setState(() => _isPlacingOrder = false);
-
-    if (result.success) {
-      final data = result.data as Map<String, dynamic>?;
-      debugPrint('🛒 [Checkout] SUCCESS. Keys: ${data?.keys.toList()}');
-      debugPrint('🛒 [Checkout] Full: $data');
-
-      // Multiple suppliers warning
-      final warning = data?['warningMessage']?.toString();
-      if (warning != null && warning.isNotEmpty && mounted) {
-        await showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            title: const Row(children: [
-              Icon(Icons.info_outline, color: Colors.orange),
-              SizedBox(width: 8),
-              Expanded(child: Text('Multiple Orders Created')),
-            ]),
-            content: SingleChildScrollView(child: Text(warning)),
-            actions: [
-              ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('OK, Got It')),
-            ],
-          ),
-        );
-      }
-
-      if (!mounted) return;
-      final orderId = _extractOrderId(data);
-      debugPrint('🛒 [Checkout] orderId: "$orderId"');
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PaymentScreen(
-            orderId:    orderId ?? '',
-            orderTotal: widget.total,
-            orderData:  data,
-          ),
+    if (supplierIds.length > 1) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.store, color: AppColors.primary, size: 22),
+            ),
+            const SizedBox(width: 12),
+            const Text('Multiple Suppliers'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              'You are ordering from ${supplierIds.length} suppliers.',
+              style: const TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
+              ),
+              child: const Row(children: [
+                Icon(Icons.info_outline, color: AppColors.warning, size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Each supplier will handle their own delivery separately. You will be charged a delivery fee per supplier.',
+                    style: TextStyle(fontSize: 13, color: AppColors.textPrimary),
+                  ),
+                ),
+              ]),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Go Back'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue'),
+            ),
+          ],
         ),
       );
-    } else {
-      debugPrint('❌ [Checkout] FAILED: ${result.message}');
-      _snack(
-          result.message ?? 'Checkout failed. Please try again.',
-          isError: true);
+      if (confirmed != true || !mounted) return;
     }
-  }
 
+    // Go directly to payment screen — order placed AFTER payment
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentScreen(
+          orderId:             '', // empty — order not placed yet
+          orderTotal:          widget.total,
+          orderData:           null,
+          deliveryAddressId:   _deliveryAddressId!,
+          specialInstructions: _instructionsCtrl.text.trim(),
+          discountCode: _discountCtrl.text.trim().isEmpty
+              ? null
+              : _discountCtrl.text.trim(),
+        ),
+      ),
+    );
+  }
   void _snack(String msg, {bool isError = false}) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content:         Text(msg),
