@@ -8,14 +8,19 @@ class PaymentScreen extends StatefulWidget {
   final String orderId;
   final double orderTotal;
   final Map<String, dynamic>? orderData;
+  final String? deliveryAddressId;
+  final String? specialInstructions;
+  final String? discountCode;
 
   const PaymentScreen({
     super.key,
     required this.orderId,
     required this.orderTotal,
     this.orderData,
+    this.deliveryAddressId,
+    this.specialInstructions,
+    this.discountCode,
   });
-
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
@@ -127,14 +132,47 @@ class _PaymentScreenState extends State<PaymentScreen>
       _snack('Please select a card.', isError: true);
       return;
     }
-    final oid = _resolvedOrderId;
-    if (oid.isEmpty) {
-      _snack('Order ID not found. Please go back and try again.',
-          isError: true);
-      return;
-    }
 
-    setState(() => _isProcessing = true);
+    String oid = _resolvedOrderId;
+
+    // If orderId empty — place order first then pay
+    if (oid.isEmpty) {
+      if (widget.deliveryAddressId == null) {
+        _snack('Delivery address missing. Please go back.',
+            isError: true);
+        return;
+      }
+      setState(() => _isProcessing = true);
+      debugPrint('🛒 [PayWithSavedCard] Placing order first...');
+      final orderResult = await AuthService.instance.checkout(
+        deliveryAddressId:   widget.deliveryAddressId!,
+        billingAddressId:    widget.deliveryAddressId!,
+        specialInstructions: widget.specialInstructions ?? '',
+        discountCode:        widget.discountCode,
+      );
+      if (!mounted) return;
+      if (!orderResult.success || orderResult.data == null) {
+        setState(() => _isProcessing = false);
+        _snack(orderResult.message ?? 'Order placement failed.',
+            isError: true);
+        return;
+      }
+      final data   = orderResult.data!;
+      final orders = data['orders'];
+      if (orders is List && orders.isNotEmpty) {
+        oid = orders.first['orderId']?.toString() ?? '';
+      }
+      if (oid.isEmpty) oid = data['orderId']?.toString() ?? '';
+      debugPrint('🛒 [PayWithSavedCard] Order placed! orderId: $oid');
+      if (oid.isEmpty) {
+        setState(() => _isProcessing = false);
+        _snack('Order placed but ID missing. Contact support.',
+            isError: true);
+        return;
+      }
+    } else {
+      setState(() => _isProcessing = true);
+    }
 
     debugPrint('\n╔══════════════════════════════════════╗');
     debugPrint('║  PAY WITH SAVED CARD');
@@ -179,11 +217,46 @@ class _PaymentScreenState extends State<PaymentScreen>
 
   // ── Pay with new card via Stripe PaymentSheet ──────────
   Future<void> _payWithNewCard() async {
-    final oid = _resolvedOrderId;
+    String oid = _resolvedOrderId;
+
+    // If orderId empty — place order first then pay
     if (oid.isEmpty) {
-      _snack('Order ID not found. Please go back and try again.',
-          isError: true);
-      return;
+      if (widget.deliveryAddressId == null) {
+        _snack('Delivery address missing. Please go back.',
+            isError: true);
+        return;
+      }
+      setState(() => _isPayingNew = true);
+      debugPrint('🛒 [PayWithNewCard] Placing order first...');
+      final orderResult = await AuthService.instance.checkout(
+        deliveryAddressId:   widget.deliveryAddressId!,
+        billingAddressId:    widget.deliveryAddressId!,
+        specialInstructions: widget.specialInstructions ?? '',
+        discountCode:        widget.discountCode,
+      );
+      if (!mounted) return;
+      if (!orderResult.success || orderResult.data == null) {
+        setState(() => _isPayingNew = false);
+        _snack(orderResult.message ?? 'Order placement failed.',
+            isError: true);
+        return;
+      }
+      // Extract orderId
+      final data   = orderResult.data!;
+      final orders = data['orders'];
+      if (orders is List && orders.isNotEmpty) {
+        oid = orders.first['orderId']?.toString() ?? '';
+      }
+      if (oid.isEmpty) oid = data['orderId']?.toString() ?? '';
+      debugPrint('🛒 [PayWithNewCard] Order placed! orderId: $oid');
+      if (oid.isEmpty) {
+        setState(() => _isPayingNew = false);
+        _snack('Order placed but ID missing. Contact support.',
+            isError: true);
+        return;
+      }
+    } else {
+      setState(() => _isPayingNew = true);
     }
 
     setState(() => _isPayingNew = true);
@@ -378,8 +451,8 @@ class _PaymentScreenState extends State<PaymentScreen>
           isError: true);
     }
   }
-
-  void _navigateToSuccess(String oid) {
+  Future<void> _navigateToSuccess(String oid) async {
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -391,7 +464,6 @@ class _PaymentScreenState extends State<PaymentScreen>
       ),
     );
   }
-
   void _snack(String msg, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -427,29 +499,6 @@ class _PaymentScreenState extends State<PaymentScreen>
       body: Column(children: [
         _OrderBanner(total: widget.orderTotal, orderId: oid),
 
-        // Warn if orderId is missing
-        if (oid.isEmpty)
-          Container(
-            margin:  const EdgeInsets.all(12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color:        Colors.orange.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.orange.withOpacity(0.4)),
-            ),
-            child: const Row(children: [
-              Icon(Icons.warning_amber_rounded,
-                  color: Colors.orange, size: 20),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Order ID could not be read. '
-                  'Payment may fail. Check your Orders tab.',
-                  style: TextStyle(fontSize: 12, color: Colors.black87),
-                ),
-              ),
-            ]),
-          ),
 
         Expanded(
           child: TabBarView(

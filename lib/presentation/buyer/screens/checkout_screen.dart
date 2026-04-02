@@ -6,20 +6,11 @@ import 'package:food_delivery_app/presentation/buyer/screens/address_bottom_shee
 import 'package:food_delivery_app/presentation/buyer/screens/map_location_picker_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/payment_screen.dart';
 
-// ══════════════════════════════════════════════════════════
-//  CheckoutScreen
-//
-//  IMPORTANT — deliveryFee passed in here is already the
-//  confirmed total fee (base × stores) because the user
-//  accepted the multi-store popup in CartScreen before
-//  navigating here.  We never recalculate it; we just
-//  display and forward it as-is to PaymentScreen.
-// ══════════════════════════════════════════════════════════
 class CheckoutScreen extends StatefulWidget {
   final List<Map<String, dynamic>> cartItems;
   final double subtotal;
-  final double deliveryFee;   // confirmed total fee (base × stores)
-  final double total;         // subtotal + deliveryFee
+  final double deliveryFee;
+  final double total;
   final Map<String, dynamic>? cartMeta;
 
   const CheckoutScreen({
@@ -244,54 +235,117 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       }
       return null;
     }
-    return deep(data, 0);
+
+    final d = deep(data, 0);
+    if (d != null) return d;
+    debugPrint('[orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    return null;
   }
 
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
-      _snack('Please select a delivery address to continue.', isError: true);
+      _snack('Please select a delivery address to continue.',
+          isError: true);
       return;
     }
-    setState(() => _isPlacingOrder = true);
 
-    final result = await AuthService.instance.checkout(
-      deliveryAddressId:   _deliveryAddressId!,
-      billingAddressId:    _deliveryAddressId!,
-      specialInstructions: _instructionsCtrl.text.trim(),
-      discountCode: _discountCtrl.text.trim().isEmpty
-          ? null
-          : _discountCtrl.text.trim(),
-    );
+    // Count unique suppliers in cart
+    final supplierIds = widget.cartItems
+        .map((i) =>
+            (i['supplierId'] ?? i['supplier']?['id'] ?? '').toString())
+        .where((id) => id.isNotEmpty)
+        .toSet();
 
-    if (!mounted) return;
-    setState(() => _isPlacingOrder = false);
-
-    if (result.success) {
-      final data    = result.data as Map<String, dynamic>?;
-      final orderId = _extractOrderId(data);
-
-      // FIX: The warningMessage dialog has been intentionally removed here.
-      // The multi-supplier delivery fee breakdown is already shown and
-      // confirmed by the user via the popup in CartScreen before they reach
-      // this screen.  Showing it again here is redundant and disruptive.
-
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PaymentScreen(
-            orderId:    orderId ?? '',
-            // widget.total already includes the confirmed full delivery fee
-            // (base × stores) set before navigation from CartScreen.
-            orderTotal: widget.total,
-            orderData:  data,
-          ),
+    if (supplierIds.length > 1) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.store,
+                  color: AppColors.primary, size: 22),
+            ),
+            const SizedBox(width: 12),
+            const Text('Multiple Suppliers'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              'You are ordering from ${supplierIds.length} suppliers.',
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: AppColors.warning.withOpacity(0.3)),
+              ),
+              child: const Row(children: [
+                Icon(Icons.info_outline,
+                    color: AppColors.warning, size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Each supplier will handle their own delivery '
+                    'separately. You will be charged a delivery fee '
+                    'per supplier.',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textPrimary),
+                  ),
+                ),
+              ]),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Go Back'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue'),
+            ),
+          ],
         ),
       );
-    } else {
-      _snack(result.message ?? 'Checkout failed. Please try again.',
-          isError: true);
+      if (confirmed != true || !mounted) return;
     }
+
+    // Go directly to payment screen — order placed AFTER payment
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentScreen(
+          orderId:             '',
+          orderTotal:          widget.total,
+          orderData:           null,
+          deliveryAddressId:   _deliveryAddressId!,
+          specialInstructions: _instructionsCtrl.text.trim(),
+          discountCode: _discountCtrl.text.trim().isEmpty
+              ? null
+              : _discountCtrl.text.trim(),
+        ),
+      ),
+    );
   }
 
   void _snack(String msg, {bool isError = false}) =>
@@ -333,7 +387,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               address:     _formatAddress(_selectedAddress!),
                               icon:        _addressIcon(_selectedAddress!),
                               isDefault:   !_isMapPickedAddress &&
-                                           _selectedAddress!['isDefault'] == true,
+                                  _selectedAddress!['isDefault'] == true,
                               isMapPicked: _isMapPickedAddress,
                               onChange:    _changeAddress,
                             )
@@ -344,7 +398,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               onAdd:        _addNewAddress,
                             ),
                           const SizedBox(height: 12),
-                          _UseLocationButton(onTap: _pickLocationFromMap),
+                          _UseLocationButton(
+                              onTap: _pickLocationFromMap),
                         ],
                       ),
               ),
@@ -373,7 +428,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     child: TextField(
                       controller: _discountCtrl,
                       textCapitalization: TextCapitalization.characters,
-                      decoration: _inputDeco('Enter promo code').copyWith(
+                      decoration:
+                          _inputDeco('Enter promo code').copyWith(
                         suffixIcon: _isDiscountApplied
                             ? const Icon(Icons.check_circle,
                                 color: AppColors.success)
@@ -396,7 +452,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         return;
                       }
                       setState(() => _isDiscountApplied = true);
-                      _snack('Code "$code" will be applied at checkout.');
+                      _snack(
+                          'Code "$code" will be applied at checkout.');
                     },
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
@@ -415,17 +472,21 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 child: Column(children: [
                   ...widget.cartItems.take(3).map((item) {
                     final name  = (item['productName'] ??
-                            item['product']?['name'] ?? 'Product')
+                            item['product']?['name'] ??
+                            'Product')
                         .toString();
-                    final qty   = ((item['quantity'] ?? 0) as num).toInt();
+                    final qty   =
+                        ((item['quantity'] ?? 0) as num).toInt();
                     final price = ((item['unitPrice'] ??
                                 item['price'] ??
-                                item['product']?['price'] ?? 0) as num)
+                                item['product']?['price'] ??
+                                0) as num)
                         .toDouble();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        mainAxisAlignment:
+                            MainAxisAlignment.spaceBetween,
                         children: [
                           Expanded(
                             child: Text('$name × $qty',
@@ -435,11 +496,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis),
                           ),
-                          Text('£${(price * qty).toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                  fontSize:   14,
-                                  fontWeight: FontWeight.w600,
-                                  color:      AppColors.textPrimary)),
+                          Text(
+                            '£${(price * qty).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                fontSize:   14,
+                                fontWeight: FontWeight.w600,
+                                color:      AppColors.textPrimary),
+                          ),
                         ],
                       ),
                     );
@@ -464,7 +527,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       _discountCtrl.text.trim().isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment:
+                          MainAxisAlignment.spaceBetween,
                       children: [
                         Row(children: [
                           const Icon(Icons.local_offer,
@@ -484,7 +548,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ],
                   const Divider(height: 24),
-                  _SummRow('Total',
+                  _SummRow(
+                      'Total',
                       '£${widget.total.toStringAsFixed(2)}',
                       bold: true),
                 ]),
@@ -509,7 +574,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                             SizedBox(
                               width: 20, height: 20,
                               child: CircularProgressIndicator(
-                                  color: AppColors.white, strokeWidth: 2),
+                                  color:       AppColors.white,
+                                  strokeWidth: 2),
                             ),
                             SizedBox(width: 12),
                             Text('Processing...',
@@ -568,8 +634,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             borderSide: const BorderSide(color: AppColors.border)),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
-            borderSide:
-                const BorderSide(color: AppColors.primary, width: 1.5)),
+            borderSide: const BorderSide(
+                color: AppColors.primary, width: 1.5)),
       );
 }
 
@@ -585,7 +651,8 @@ class _UseLocationButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(
+            horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color:        AppColors.primary.withOpacity(0.07),
           borderRadius: BorderRadius.circular(12),
@@ -594,42 +661,37 @@ class _UseLocationButton extends StatelessWidget {
             width: 1.2,
           ),
         ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color:        AppColors.primary.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(Icons.my_location,
-                  color: AppColors.primary, size: 18),
+        child: Row(children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color:        AppColors.primary.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(8),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Use Current Location',
+            child: Icon(Icons.my_location,
+                color: AppColors.primary, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Use Current Location',
                     style: TextStyle(
                         fontSize:   14,
                         fontWeight: FontWeight.w700,
-                        color:      AppColors.primary),
-                  ),
-                  Text(
-                    'Pick on map & auto-fill address',
+                        color:      AppColors.primary)),
+                Text('Pick on map & auto-fill address',
                     style: TextStyle(
                         fontSize: 11,
-                        color:    AppColors.primary.withOpacity(0.7)),
-                  ),
-                ],
-              ),
+                        color:
+                            AppColors.primary.withOpacity(0.7))),
+              ],
             ),
-            Icon(Icons.chevron_right,
-                color: AppColors.primary, size: 20),
-          ],
-        ),
+          ),
+          Icon(Icons.chevron_right,
+              color: AppColors.primary, size: 20),
+        ]),
       ),
     );
   }
@@ -638,7 +700,6 @@ class _UseLocationButton extends StatelessWidget {
 // ══════════════════════════════════════════════════════════
 //  Reusable widgets
 // ══════════════════════════════════════════════════════════
-
 class _Section extends StatelessWidget {
   final String title; final IconData icon; final Widget child;
   const _Section(
@@ -670,9 +731,9 @@ class _Section extends StatelessWidget {
 }
 
 class _AddressTile extends StatelessWidget {
-  final String label, address;
+  final String   label, address;
   final IconData icon;
-  final bool isDefault, isMapPicked;
+  final bool     isDefault, isMapPicked;
   final VoidCallback onChange;
   const _AddressTile({
     required this.label,
@@ -703,17 +764,14 @@ class _AddressTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
             Wrap(
-              spacing:    6,
-              runSpacing: 4,
+              spacing: 6, runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                      fontSize:   15,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary),
-                ),
+                Text(label,
+                    style: const TextStyle(
+                        fontSize:   15,
+                        fontWeight: FontWeight.bold,
+                        color:      AppColors.textPrimary)),
                 if (isMapPicked)
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -752,8 +810,8 @@ class _AddressTile extends StatelessWidget {
         TextButton(
           onPressed: onChange,
           style: TextButton.styleFrom(
-            padding:     const EdgeInsets.symmetric(horizontal: 8),
-            minimumSize: const Size(0, 0),
+            padding:       const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize:   const Size(0, 0),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           child: const Text('Change'),
@@ -762,12 +820,13 @@ class _AddressTile extends StatelessWidget {
 }
 
 class _NoAddress extends StatelessWidget {
-  final bool hasAddresses;
+  final bool         hasAddresses;
   final VoidCallback onSelect, onAdd;
-  const _NoAddress(
-      {required this.hasAddresses,
-      required this.onSelect,
-      required this.onAdd});
+  const _NoAddress({
+    required this.hasAddresses,
+    required this.onSelect,
+    required this.onAdd,
+  });
 
   @override
   Widget build(BuildContext context) =>
@@ -777,8 +836,8 @@ class _NoAddress extends StatelessWidget {
           decoration: BoxDecoration(
               color: AppColors.warning.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10),
-              border:
-                  Border.all(color: AppColors.warning.withOpacity(0.3))),
+              border: Border.all(
+                  color: AppColors.warning.withOpacity(0.3))),
           child: Row(children: [
             Icon(Icons.warning_amber_rounded,
                 color: AppColors.warning, size: 20),
@@ -786,7 +845,8 @@ class _NoAddress extends StatelessWidget {
             const Expanded(
               child: Text('No delivery address selected.',
                   style: TextStyle(
-                      fontSize: 13, color: AppColors.textPrimary)),
+                      fontSize: 13,
+                      color:    AppColors.textPrimary)),
             ),
           ]),
         ),
@@ -811,33 +871,39 @@ class _Loading extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(children: [
         const SizedBox(
-            width: 20,
+            width:  20,
             height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2)),
+            child:  CircularProgressIndicator(strokeWidth: 2)),
         const SizedBox(width: 12),
         Text(label,
             style: const TextStyle(
-                fontSize: 14, color: AppColors.textSecondary)),
+                fontSize: 14,
+                color:    AppColors.textSecondary)),
       ]);
 }
 
 class _SummRow extends StatelessWidget {
   final String title, value;
-  final bool bold;
+  final bool   bold;
   const _SummRow(this.title, this.value, {this.bold = false});
 
   @override
   Widget build(BuildContext context) =>
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
         Text(title,
             style: TextStyle(
                 fontSize:   bold ? 16 : 14,
-                fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-                color:      AppColors.textPrimary)),
+                fontWeight: bold
+                    ? FontWeight.bold : FontWeight.normal,
+                color: AppColors.textPrimary)),
         Text(value,
             style: TextStyle(
                 fontSize:   bold ? 18 : 15,
-                fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-                color: bold ? AppColors.primary : AppColors.textPrimary)),
+                fontWeight: bold
+                    ? FontWeight.bold : FontWeight.w600,
+                color: bold
+                    ? AppColors.primary
+                    : AppColors.textPrimary)),
       ]);
 }
