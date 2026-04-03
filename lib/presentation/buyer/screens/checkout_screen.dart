@@ -559,9 +559,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       );
 }
 
-// ══════════════════════════════════════════════════════════
-//  Use Current Location button
-// ══════════════════════════════════════════════════════════
+
 class _UseLocationButton extends StatelessWidget {
   final VoidCallback onTap;
   const _UseLocationButton({required this.onTap});
@@ -590,7 +588,7 @@ class _UseLocationButton extends StatelessWidget {
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Text('Use Current Location',
+                Text('Pin on Map',
                     style: TextStyle(
                         fontSize:   14,
                         fontWeight: FontWeight.w700,
