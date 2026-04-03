@@ -268,8 +268,13 @@ class _PaymentScreenState extends State<PaymentScreen>
     debugPrint('╚══════════════════════════════════════╝');
 
     // Step 1: Create PaymentIntent
-    final intentResult =
-        await AuthService.instance.createPaymentIntent(orderId: oid);
+    final groupOrderId = widget.orderData?['groupOrderId']?.toString();
+    final intentResult = await AuthService.instance.createPaymentIntent(
+      orderId:      (groupOrderId == null || groupOrderId.isEmpty) ? oid : null,
+      groupOrderId: (groupOrderId != null && groupOrderId.isNotEmpty)
+          ? groupOrderId
+          : null,
+    );
     if (!mounted) return;
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -453,13 +458,47 @@ class _PaymentScreenState extends State<PaymentScreen>
   }
   Future<void> _navigateToSuccess(String oid) async {
     if (!mounted) return;
+
+    double actualTotal = widget.orderTotal;
+    Map<String, dynamic>? actualOrderData = widget.orderData;
+
+    try {
+      final groupOrderId = widget.orderData?['groupOrderId']?.toString();
+
+      if (groupOrderId != null && groupOrderId.isNotEmpty) {
+        // Multi-supplier — fetch all orders and sum totals
+        final groupResult =
+        await AuthService.instance.getOrdersByGroupId(groupOrderId);
+        if (groupResult.success && groupResult.data != null) {
+          final orders = groupResult.data!;
+          final total  = orders.fold<double>(
+            0,
+                (sum, o) =>
+            sum + ((o['totalAmount'] as num?)?.toDouble() ?? 0.0),
+          );
+          if (total > 0) actualTotal = total;
+        }
+      } else {
+        // Single order — fetch actual total
+        final orderResult =
+        await AuthService.instance.getMyOrderById(oid);
+        if (orderResult.success && orderResult.data != null) {
+          final t =
+          (orderResult.data!['totalAmount'] as num?)?.toDouble();
+          if (t != null) actualTotal = t;
+          actualOrderData = orderResult.data;
+        }
+      }
+    } catch (_) {}
+
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => PaymentSuccessScreen(
           orderId:    oid,
-          orderTotal: widget.orderTotal,
-          orderData:  widget.orderData,
+          orderTotal: actualTotal,
+          orderData:  actualOrderData,
         ),
       ),
     );
@@ -574,7 +613,7 @@ class _OrderBanner extends StatelessWidget {
                 style: TextStyle(
                     fontSize: 13,
                     color: AppColors.white.withOpacity(0.8))),
-            Text('Total: £${total.toStringAsFixed(2)}',
+                Text('Est. Total: £${total.toStringAsFixed(2)}',
                 style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
