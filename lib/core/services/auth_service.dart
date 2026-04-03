@@ -1692,13 +1692,15 @@ class AuthService {
     }
   }
 
+
   // ══════════════════════════════════════════════════════
   //  PAYMENTS
   // ══════════════════════════════════════════════════════
 
   /// Creates a Stripe PaymentIntent. Returns clientSecret in data.
   Future<ApiResult<Map<String, dynamic>>> createPaymentIntent({
-    required String orderId,
+    String? orderId,
+    String? groupOrderId,
   }) async {
     try {
       _log('CREATE PAYMENT INTENT REQUEST', ApiConstants.paymentCreateIntent,
@@ -1706,7 +1708,11 @@ class AuthService {
       final response = await http
           .post(Uri.parse(ApiConstants.paymentCreateIntent),
           headers: await _authHeaders,
-          body: jsonEncode({'orderId': orderId}))
+          body: jsonEncode({
+            if (orderId != null && orderId.isNotEmpty) 'orderId': orderId,
+            if (groupOrderId != null && groupOrderId.isNotEmpty)
+              'groupOrderId': groupOrderId,
+          }))
           .timeout(const Duration(seconds: 30));
       _log('CREATE PAYMENT INTENT RESPONSE', ApiConstants.paymentCreateIntent,
           status: response.statusCode, body: response.body);
@@ -2036,6 +2042,33 @@ class AuthService {
           message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
     } on Exception catch (e) {
       return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    }
+  }
+  Future<ApiResult<Map<String, dynamic>>> calculateDeliveryFee({
+    required String deliveryAddressId,
+  }) async {
+    const url = '${ApiConstants.baseUrl}/api/orders/calculate-delivery-fee';
+    _log('CALCULATE DELIVERY FEE REQUEST', url,
+        extra: 'addressId: $deliveryAddressId');
+    try {
+      final response = await http
+          .post(
+        Uri.parse(url),
+        headers: await _authHeaders,
+        body: jsonEncode({'deliveryAddressId': deliveryAddressId}),
+      )
+          .timeout(const Duration(seconds: 30));
+      _log('CALCULATE DELIVERY FEE RESPONSE', url,
+          status: response.statusCode, body: response.body);
+      if (response.statusCode == 200) {
+        return ApiResult(success: true, data: _safeJsonDecode(response.body));
+      }
+      return ApiResult(success: false,
+          message: _errorMessage(
+              _safeJsonDecode(response.body), response.statusCode));
+    } on Exception catch (e) {
+      return ApiResult(
+          success: false, message: _friendlyNetworkError(e.toString()));
     }
   }
 }

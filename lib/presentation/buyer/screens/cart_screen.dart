@@ -576,14 +576,15 @@ class _OrderSummaryBar extends StatelessWidget {
           // Always show just the base delivery fee in the cart.
           // No store-count multiplier here — that appears in the popup.
           if (storeCount > 1)
-  _SummaryRow(
-    'Delivery Fee',
-    '£${displayDeliveryFee.toStringAsFixed(2)} × $storeCount stores',
-    valueColor: Colors.orange,
-  )
+            _SummaryRow(
+              'Delivery Fee',
+              '£${displayDeliveryFee.toStringAsFixed(2)} × $storeCount stores (est.)',
+              valueColor: Colors.orange,
+            )
 else
-  _SummaryRow('Delivery Fee',
-      '£${displayDeliveryFee.toStringAsFixed(2)}'),
+            _SummaryRow('Delivery Fee',
+                '£${displayDeliveryFee.toStringAsFixed(2)} (est.)'),
+
           const Divider(height: 24),
           _SummaryRow('Total',
               '£${displayTotal.toStringAsFixed(2)}',
