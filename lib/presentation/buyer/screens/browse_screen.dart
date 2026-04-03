@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/product_detail_screen.dart';
+import 'package:food_delivery_app/core/widgets/auth_image.dart';
 
 class BrowseScreen extends StatefulWidget {
   final String? initialSearch;
@@ -41,6 +42,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
   @override
   void initState() {
     super.initState();
+    debugPrint('🛒 [BrowseScreen] initState');
     _searchQuery      = widget.initialSearch?.trim() ?? '';
     _searchController = TextEditingController(text: _searchQuery);
     _loadFiltersAndCategories();
@@ -51,11 +53,13 @@ class _BrowseScreenState extends State<BrowseScreen> {
   void dispose() { _searchController.dispose(); super.dispose(); }
 
   Future<void> _loadFiltersAndCategories() async {
+    debugPrint('🔍 [BrowseScreen] Loading filters and categories...');
     final fr = await AuthService.instance.getCatalogFilters();
     if (mounted && fr.success && fr.data != null) {
       final d   = fr.data!;
       final min = ((d['minPrice'] ?? d['priceRange']?['min'] ?? 0) as num).toDouble();
       final max = ((d['maxPrice'] ?? d['priceRange']?['max'] ?? 1000) as num).toDouble();
+      debugPrint('✅ [BrowseScreen] Filters loaded — min: $min, max: $max');
       setState(() {
         _minPrice = min; _maxPrice = max;
         _selectedMinPrice = min; _selectedMaxPrice = max;
@@ -63,14 +67,14 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
     final cr = await AuthService.instance.getCategories();
     if (mounted && cr.success) {
-      setState(() {
-        _categories =
-            (cr.data ?? []).whereType<Map<String, dynamic>>().toList();
-      });
+      final cats = (cr.data ?? []).whereType<Map<String, dynamic>>().toList();
+      debugPrint('✅ [BrowseScreen] Categories loaded — count: ${cats.length}');
+      setState(() { _categories = cats; });
     }
   }
 
   Future<void> _loadProducts({bool reset = false}) async {
+    debugPrint('📦 [BrowseScreen] _loadProducts(reset: $reset, page: $_page)');
     if (reset) {
       setState(() { _isLoading = true; _error = null; _page = 1; _products = []; });
     } else {
@@ -100,6 +104,25 @@ class _BrowseScreenState extends State<BrowseScreen> {
       _applySort(items);
       final total = ((data['total'] ?? data['totalCount'] ??
           data['totalItems'] ?? raw.length) as num).toInt();
+
+      // ── Debug: log image data for first few products ──────────
+      debugPrint('✅ [BrowseScreen] Products loaded — count: ${items.length}, total: $total');
+      for (int i = 0; i < items.length && i < 3; i++) {
+        final p = items[i];
+        final name = p['name'] ?? p['productName'] ?? '?';
+        final images = p['images'];
+        final topLevelUrl = p['imageUrl'] ?? p['image'];
+        debugPrint('  📸 Product[$i] "$name":');
+        debugPrint('     images field type: ${images.runtimeType}');
+        if (images is List) {
+          debugPrint('     images count: ${images.length}');
+          for (final img in images.take(2)) {
+            debugPrint('     img entry: $img');
+          }
+        }
+        debugPrint('     top-level imageUrl: $topLevelUrl');
+      }
+
       setState(() {
         if (reset) _products = items; else _products.addAll(items);
         _total = total;
@@ -107,6 +130,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
         _isLoading = false; _isLoadingMore = false;
       });
     } else {
+      debugPrint('❌ [BrowseScreen] Failed to load products: ${result.message}');
       setState(() {
         _isLoading = false; _isLoadingMore = false;
         _error = result.message ?? 'Failed to load products.';
@@ -487,8 +511,6 @@ class _BrowseScreenState extends State<BrowseScreen> {
                               crossAxisCount:   2,
                               crossAxisSpacing: 12,
                               mainAxisSpacing:  12,
-                              // ── Increased ratio to give more room
-                              //    for the taller image area ──────────
                               childAspectRatio: 0.62,
                             ),
                             itemCount:
@@ -588,10 +610,10 @@ class _PCard extends StatelessWidget {
     return Icons.shopping_basket;
   }
 
-  /// Extracts the primary image URL from the product map.
-  /// Checks the images array first (sorted by isPrimary), then
-  /// falls back to top-level imageUrl / image fields.
   String? _primaryImageUrl() {
+    final name = product['name'] ?? '?';
+
+    // Check images array first
     final images = product['images'];
     if (images is List && images.isNotEmpty) {
       final typed = images.whereType<Map<String, dynamic>>().toList()
@@ -601,17 +623,24 @@ class _PCard extends StatelessWidget {
           return aP.compareTo(bP);
         });
       for (final img in typed) {
-        final url =
-            (img['imageUrl'] ?? img['url'] ?? img['path'] ?? '')
-                .toString()
-                .trim();
-        if (url.isNotEmpty) return url;
+        final url = (img['imageUrl'] ?? img['url'] ?? img['path'] ?? '')
+            .toString().trim();
+        if (url.isNotEmpty) {
+          debugPrint('🖼️  [_PCard] "$name" → image from array: $url');
+          return url;
+        }
       }
     }
-    // Fallback
-    final fallback =
-        (product['imageUrl'] ?? product['image'])?.toString().trim();
-    return (fallback != null && fallback.isNotEmpty) ? fallback : null;
+
+    // Fallback to top-level fields
+    final fallback = (product['primaryImageUrl'] ?? product['imageUrl'] ?? product['image'])?.toString().trim();
+    if (fallback != null && fallback.isNotEmpty) {
+      debugPrint('🖼️  [_PCard] "$name" → image from top-level: $fallback');
+      return fallback;
+    }
+
+    debugPrint('⚠️  [_PCard] "$name" → NO image found. Keys: ${product.keys.toList()}');
+    return null;
   }
 
   @override
@@ -639,62 +668,68 @@ class _PCard extends StatelessWidget {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
 
-          // ── Image area — taller than before (140 → works better
-          //    for food/product photos) ─────────────────────────
+          // ── Image area ────────────────────────────────
           Stack(children: [
-            Container(
+            SizedBox(
               height: 140,
-              decoration: const BoxDecoration(
-                  color: AppColors.surfaceLight,
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(16))),
-              alignment: Alignment.center,
-              child: imgUrl != null
-                  ? ClipRRect(
-                      borderRadius: const BorderRadius.vertical(
-                          top: Radius.circular(16)),
-                      child: Image.network(
-                        imgUrl,
+              width: double.infinity,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(16)),
+                child: imgUrl != null
+                    ? AuthImage(
+                        url: imgUrl,
                         fit: BoxFit.cover,
                         width: double.infinity,
-                        height: double.infinity,
-                        loadingBuilder: (_, child, progress) =>
-                            progress == null
-                                ? child
-                                : Container(
-                                    color: AppColors.surfaceLight,
-                                    alignment: Alignment.center,
-                                    child: const SizedBox(
-                                        width: 24, height: 24,
-                                        child: CircularProgressIndicator(
-                                            strokeWidth: 2))),
-                        errorBuilder: (_, __, ___) => Icon(_icon(),
-                            size: 64, color: AppColors.primary),
-                      ))
-                  : Icon(_icon(), size: 64, color: AppColors.primary),
+                        height: 140,
+                        placeholder: Container(
+                          color: AppColors.surfaceLight,
+                          child: const Center(
+                            child: SizedBox(
+                              width: 24, height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        ),
+                        errorWidget: Container(
+                          color: AppColors.surfaceLight,
+                          child: Center(
+                              child: Icon(_icon(), size: 64,
+                                  color: AppColors.primary)),
+                        ),
+                      )
+                    : Container(
+                        color: AppColors.surfaceLight,
+                        child: Center(
+                            child: Icon(_icon(), size: 64,
+                                color: AppColors.primary)),
+                      ),
+              ),
             ),
             if (stock <= 0)
-              Positioned.fill(child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.35),
+              Positioned.fill(
+                child: ClipRRect(
                   borderRadius: const BorderRadius.vertical(
                       top: Radius.circular(16)),
+                  child: Container(
+                    color: Colors.black.withOpacity(0.35),
+                    alignment: Alignment.center,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                          color: AppColors.error,
+                          borderRadius: BorderRadius.circular(6)),
+                      child: const Text('Out of Stock',
+                          style: TextStyle(color: AppColors.white,
+                              fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
                 ),
-                alignment: Alignment.center,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                      color: AppColors.error,
-                      borderRadius: BorderRadius.circular(6)),
-                  child: const Text('Out of Stock',
-                      style: TextStyle(color: AppColors.white,
-                          fontSize: 11, fontWeight: FontWeight.bold)),
-                ),
-              )),
+              ),
           ]),
 
-          // ── Product info ─────────────────────────────────────
+          // ── Product info ─────────────────────────────
           Expanded(child: Padding(
             padding: const EdgeInsets.all(10),
             child: Column(

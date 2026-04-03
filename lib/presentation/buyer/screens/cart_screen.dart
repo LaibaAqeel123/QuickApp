@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/checkout_screen.dart';
+import 'package:food_delivery_app/core/widgets/auth_image.dart';
 
 class CartScreen extends StatefulWidget {
   final VoidCallback? onBrowseTap;
@@ -26,6 +27,7 @@ class CartScreenState extends State<CartScreen>
   @override
   void initState() {
     super.initState();
+    debugPrint('🛒 [CartScreen] initState');
     WidgetsBinding.instance.addObserver(this);
     _loadCart();
     _hasLoadedOnce = true;
@@ -55,17 +57,13 @@ class CartScreenState extends State<CartScreen>
       (item['id'] ?? item['cartItemId'] ?? '').toString();
 
   String _itemName(Map<String, dynamic> item) =>
-      (item['productName'] ?? item['product']?['name'] ?? 'Product')
-          .toString();
+      (item['productName'] ?? item['product']?['name'] ?? 'Product').toString();
 
   String _itemCategory(Map<String, dynamic> item) =>
       (item['category'] ?? item['product']?['category'] ?? '').toString();
 
   double _itemPrice(Map<String, dynamic> item) =>
-      ((item['unitPrice'] ??
-                  item['price'] ??
-                  item['product']?['price'] ??
-                  0) as num)
+      ((item['unitPrice'] ?? item['price'] ?? item['product']?['price'] ?? 0) as num)
           .toDouble();
 
   int _itemQty(Map<String, dynamic> item) =>
@@ -75,36 +73,25 @@ class CartScreenState extends State<CartScreen>
       (item['unit'] ?? item['product']?['unit'] ?? 'unit').toString();
 
   String _itemSupplier(Map<String, dynamic> item) =>
-      (item['supplierName'] ?? item['supplier']?['name'] ?? 'Supplier')
-          .toString();
+      (item['supplierName'] ?? item['supplier']?['name'] ?? 'Supplier').toString();
 
   double get _subtotal =>
       _cartItems.fold(0, (s, i) => s + (_itemPrice(i) * _itemQty(i)));
 
-  /// Base delivery fee from API meta, or default £0.00
   double get _baseDeliveryFee =>
       (_cartMeta?['deliveryFee'] as num?)?.toDouble() ?? 0.00;
 
-  /// Number of distinct suppliers in the cart
   int get _storeCount => _grouped.keys.length;
 
-  /// Delivery fee multiplied by number of stores — passed to checkout
-  /// after the user confirms the multi-store popup.
   double get _totalDeliveryFee => _baseDeliveryFee * _storeCount;
-
-  /// What we show in the cart summary bar — just the base fee.
-  /// The full multiplied fee is revealed in the checkout popup.
   double get _displayDeliveryFee => _baseDeliveryFee;
-
   double get _displayTotal => _subtotal + _displayDeliveryFee;
 
   // ── API calls ──────────────────────────────────────────
   Future<void> _loadCart() async {
     if (!mounted) return;
-    setState(() {
-      _isLoading    = true;
-      _errorMessage = null;
-    });
+    debugPrint('🛒 [CartScreen] _loadCart() called');
+    setState(() { _isLoading = true; _errorMessage = null; });
 
     final result = await AuthService.instance.getCart();
     if (!mounted) return;
@@ -114,12 +101,34 @@ class CartScreenState extends State<CartScreen>
       List<dynamic> raw = [];
       if (data['items']     is List) raw = data['items']     as List;
       if (data['cartItems'] is List) raw = data['cartItems'] as List;
+      final items = raw.whereType<Map<String, dynamic>>().toList();
+
+      // ── Debug: log image data for each cart item ──────
+      debugPrint('✅ [CartScreen] Cart loaded — ${items.length} item(s)');
+      for (int i = 0; i < items.length; i++) {
+        final item = items[i];
+        final name   = _itemName(item);
+        final images = item['images'];
+        final topUrl = item['imageUrl'] ?? item['image'];
+        debugPrint('  🛍️  CartItem[$i] "$name":');
+        debugPrint('       images field type: ${images.runtimeType}');
+        if (images is List) {
+          debugPrint('       images count: ${images.length}');
+          for (final img in images.take(2)) {
+            debugPrint('       img: $img');
+          }
+        }
+        debugPrint('       top-level imageUrl: $topUrl');
+        debugPrint('       all keys: ${item.keys.toList()}');
+      }
+
       setState(() {
         _cartMeta  = data;
-        _cartItems = raw.whereType<Map<String, dynamic>>().toList();
+        _cartItems = items;
         _isLoading = false;
       });
     } else {
+      debugPrint('❌ [CartScreen] Failed to load cart: ${result.message}');
       setState(() {
         _isLoading    = false;
         _errorMessage = result.message ?? 'Failed to load cart.';
@@ -128,10 +137,7 @@ class CartScreenState extends State<CartScreen>
   }
 
   Future<void> _updateQuantity(int index, int newQty) async {
-    if (newQty <= 0) {
-      await _removeItem(index);
-      return;
-    }
+    if (newQty <= 0) { await _removeItem(index); return; }
     final item = _cartItems[index];
     final id   = _itemId(item);
     if (id.isEmpty) return;
@@ -169,201 +175,132 @@ class CartScreenState extends State<CartScreen>
     if (!mounted) return;
     setState(() => _isClearing = false);
     if (result.success) {
-      setState(() {
-        _cartItems.clear();
-        _cartMeta = null;
-      });
+      setState(() { _cartItems.clear(); _cartMeta = null; });
       _snack('Cart cleared');
     } else {
       _snack(result.message ?? 'Failed to clear cart.', isError: true);
     }
   }
 
-  /// Shows a dialog warning the user about multiple stores.
-  /// Returns true if the user wants to continue, false if they cancel.
   Future<bool> _confirmMultiStore() async {
-    if (_storeCount <= 1) return true; // no warning needed
-
+    if (_storeCount <= 1) return true;
     final storeNames = _grouped.keys.toList();
 
     return await showDialog<bool>(
           context: context,
           barrierDismissible: false,
           builder: (_) => AlertDialog(
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             contentPadding: EdgeInsets.zero,
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Header
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                      vertical: 20, horizontal: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(20)),
+            content: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                ),
+                child: Column(children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                        color: Colors.orange.shade100, shape: BoxShape.circle),
+                    child: const Icon(Icons.store_mall_directory_outlined,
+                        color: Colors.orange, size: 32),
                   ),
-                  child: Column(children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.shade100,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.store_mall_directory_outlined,
-                          color: Colors.orange, size: 32),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Order from $_storeCount Stores',
-                      style: const TextStyle(
-                          fontSize:   18,
-                          fontWeight: FontWeight.bold,
-                          color:      Colors.black87),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Your cart has items from multiple stores',
+                  const SizedBox(height: 12),
+                  Text('Order from $_storeCount Stores',
+                      style: const TextStyle(fontSize: 18,
+                          fontWeight: FontWeight.bold, color: Colors.black87)),
+                  const SizedBox(height: 6),
+                  Text('Your cart has items from multiple stores',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
-                          fontSize: 13, color: Colors.grey.shade600),
-                    ),
+                      style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+                ]),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Stores in your order:',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600,
+                          color: Colors.black54)),
+                  const SizedBox(height: 8),
+                  ...storeNames.map((name) => Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(children: [
+                          Container(width: 8, height: 8,
+                              decoration: const BoxDecoration(
+                                  color: AppColors.primary, shape: BoxShape.circle)),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(name,
+                              style: const TextStyle(fontSize: 14,
+                                  fontWeight: FontWeight.w500, color: Colors.black87))),
+                        ]),
+                      )),
+                ]),
+              ),
+              Container(
+                margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.shade200, width: 1),
+                ),
+                child: Column(children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text('Base delivery fee',
+                        style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                    Text('£${_baseDeliveryFee.toStringAsFixed(2)}',
+                        style: const TextStyle(fontSize: 13, color: Colors.black87)),
                   ]),
-                ),
-
-                // Store list
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Stores in your order:',
-                          style: TextStyle(
-                              fontSize:   13,
-                              fontWeight: FontWeight.w600,
-                              color:      Colors.black54)),
-                      const SizedBox(height: 8),
-                      ...storeNames.map((name) => Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Row(children: [
-                              Container(
-                                width:  8,
-                                height: 8,
-                                decoration: const BoxDecoration(
-                                    color: AppColors.primary,
-                                    shape: BoxShape.circle),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(name,
-                                    style: const TextStyle(
-                                        fontSize:   14,
-                                        fontWeight: FontWeight.w500,
-                                        color:      Colors.black87)),
-                              ),
-                            ]),
-                          )),
-                    ],
-                  ),
-                ),
-
-                // Delivery fee breakdown — this is where we reveal the full fee
-                Container(
-                  margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color:        Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: Colors.orange.shade200, width: 1),
-                  ),
-                  child: Column(children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Base delivery fee',
-                            style: TextStyle(
-                                fontSize: 13,
-                                color:    Colors.grey.shade700)),
-                        Text('£${_baseDeliveryFee.toStringAsFixed(2)}',
-                            style: const TextStyle(
-                                fontSize: 13,
-                                color:    Colors.black87)),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('× $_storeCount stores',
-                            style: TextStyle(
-                                fontSize: 13,
-                                color:    Colors.grey.shade700)),
-                        Text('= £${_totalDeliveryFee.toStringAsFixed(2)}',
-                            style: const TextStyle(
-                                fontSize:   14,
-                                fontWeight: FontWeight.bold,
-                                color:      Colors.orange)),
-                      ],
-                    ),
-                    const Divider(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Total delivery fee',
-                            style: TextStyle(
-                                fontSize:   14,
-                                fontWeight: FontWeight.w600,
-                                color:      Colors.black87)),
-                        Text('£${_totalDeliveryFee.toStringAsFixed(2)}',
-                            style: TextStyle(
-                                fontSize:   15,
-                                fontWeight: FontWeight.bold,
-                                color:      Colors.orange.shade700)),
-                      ],
-                    ),
+                  const SizedBox(height: 6),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text('× $_storeCount stores',
+                        style: TextStyle(fontSize: 13, color: Colors.grey.shade700)),
+                    Text('= £${_totalDeliveryFee.toStringAsFixed(2)}',
+                        style: const TextStyle(fontSize: 14,
+                            fontWeight: FontWeight.bold, color: Colors.orange)),
                   ]),
-                ),
-
-                // Buttons
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                        child: const Text('Continue to Checkout',
-                            style: TextStyle(
-                                fontSize:   15,
-                                fontWeight: FontWeight.bold)),
-                      ),
-                      const SizedBox(height: 10),
-                      OutlinedButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                        child: const Text('Review My Cart',
-                            style: TextStyle(fontSize: 15)),
-                      ),
-                    ],
+                  const Divider(height: 16),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    const Text('Total delivery fee',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600,
+                            color: Colors.black87)),
+                    Text('£${_totalDeliveryFee.toStringAsFixed(2)}',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+                            color: Colors.orange.shade700)),
+                  ]),
+                ]),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Continue to Checkout',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                   ),
-                ),
-              ],
-            ),
+                  const SizedBox(height: 10),
+                  OutlinedButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Review My Cart', style: TextStyle(fontSize: 15)),
+                  ),
+                ]),
+              ),
+            ]),
           ),
         ) ??
         false;
@@ -387,22 +324,21 @@ class CartScreenState extends State<CartScreen>
 
   IconData _icon(String cat) {
     switch (cat.toLowerCase()) {
-      case 'bakery':        return Icons.bakery_dining;
-      case 'meat':          return Icons.set_meal;
-      case 'dairy':         return Icons.local_drink;
+      case 'bakery':          return Icons.bakery_dining;
+      case 'meat':            return Icons.set_meal;
+      case 'dairy':           return Icons.local_drink;
       case 'fruit & veg':
       case 'fruit and veg':
-      case 'vegetables':    return Icons.eco;
-      case 'frozen':        return Icons.ac_unit;
-      case 'dry items':     return Icons.grain;
-      default:              return Icons.shopping_basket;
+      case 'vegetables':      return Icons.eco;
+      case 'frozen':          return Icons.ac_unit;
+      case 'dry items':       return Icons.grain;
+      default:                return Icons.shopping_basket;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -414,19 +350,14 @@ class CartScreenState extends State<CartScreen>
           if (_cartItems.isNotEmpty)
             _isClearing
                 ? const Padding(
-                    padding: EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 14),
-                    child: SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                          color: AppColors.white, strokeWidth: 2),
-                    ),
-                  )
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: SizedBox(width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            color: AppColors.white, strokeWidth: 2)))
                 : TextButton(
                     onPressed: _clearCart,
                     child: const Text('Clear All',
-                        style: TextStyle(color: AppColors.white)),
-                  ),
+                        style: TextStyle(color: AppColors.white))),
         ],
       ),
       body: _isLoading
@@ -434,13 +365,8 @@ class CartScreenState extends State<CartScreen>
           : _errorMessage != null
               ? _ErrorView(message: _errorMessage!, onRetry: _loadCart)
               : _cartItems.isEmpty
-                  ? _EmptyCartView(
-                      onBrowse: widget.onBrowseTap ?? () {})
+                  ? _EmptyCartView(onBrowse: widget.onBrowseTap ?? () {})
                   : Column(children: [
-                      // ── Multi-store banner REMOVED ─────
-                      // The full delivery fee breakdown is shown
-                      // in the checkout popup instead.
-
                       Expanded(
                         child: RefreshIndicator(
                           onRefresh: _loadCart,
@@ -448,31 +374,24 @@ class CartScreenState extends State<CartScreen>
                             padding: const EdgeInsets.all(16),
                             itemCount: _grouped.length,
                             itemBuilder: (_, i) {
-                              final supplier =
-                                  _grouped.keys.elementAt(i);
-                              final items = _grouped[supplier]!;
+                              final supplier = _grouped.keys.elementAt(i);
+                              final items    = _grouped[supplier]!;
                               return Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Container(
                                     padding: const EdgeInsets.all(12),
-                                    margin: const EdgeInsets.only(
-                                        bottom: 12),
+                                    margin: const EdgeInsets.only(bottom: 12),
                                     decoration: BoxDecoration(
-                                      color: AppColors.primary
-                                          .withOpacity(0.1),
-                                      borderRadius:
-                                          BorderRadius.circular(12),
+                                      color: AppColors.primary.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
                                     ),
                                     child: Row(children: [
                                       const Icon(Icons.store,
-                                          color: AppColors.primary,
-                                          size:  20),
+                                          color: AppColors.primary, size: 20),
                                       const SizedBox(width: 8),
                                       Text(supplier,
-                                          style: const TextStyle(
-                                              fontSize:   15,
+                                          style: const TextStyle(fontSize: 15,
                                               fontWeight: FontWeight.bold,
                                               color: AppColors.primary)),
                                     ]),
@@ -486,10 +405,8 @@ class CartScreenState extends State<CartScreen>
                                       quantity:   _itemQty(item),
                                       unit:       _itemUnit(item),
                                       icon:       _icon(_itemCategory(item)),
-                                      onIncrease: () => _updateQuantity(
-                                          gi, _itemQty(item) + 1),
-                                      onDecrease: () => _updateQuantity(
-                                          gi, _itemQty(item) - 1),
+                                      onIncrease: () => _updateQuantity(gi, _itemQty(item) + 1),
+                                      onDecrease: () => _updateQuantity(gi, _itemQty(item) - 1),
                                       onRemove:   () => _removeItem(gi),
                                     );
                                   }),
@@ -500,16 +417,10 @@ class CartScreenState extends State<CartScreen>
                           ),
                         ),
                       ),
-
                       _OrderSummaryBar(
-                        subtotal:          _subtotal,
-                        // Show only the base delivery fee here.
-                        // The total (multiplied) fee is shown in
-                        // the popup before proceeding to checkout.
+                        subtotal:           _subtotal,
                         displayDeliveryFee: _displayDeliveryFee,
                         displayTotal:       _displayTotal,
-                        // Pass the real multiplied fee to checkout
-                        // after the user confirms the popup.
                         actualDeliveryFee:  _totalDeliveryFee,
                         actualTotal:        _subtotal + _totalDeliveryFee,
                         storeCount:         _storeCount,
@@ -525,9 +436,6 @@ class CartScreenState extends State<CartScreen>
 
 // ══════════════════════════════════════════════════════════
 //  Order Summary Bar
-//  - displayDeliveryFee / displayTotal  → shown in cart (base fee only)
-//  - actualDeliveryFee  / actualTotal   → passed to CheckoutScreen
-//    after the user confirms the multi-store popup
 // ══════════════════════════════════════════════════════════
 class _OrderSummaryBar extends StatelessWidget {
   final double subtotal;
@@ -560,54 +468,36 @@ class _OrderSummaryBar extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        boxShadow: [
-          BoxShadow(
-              color:      Colors.black.withOpacity(0.1),
-              blurRadius: 10,
-              offset:     const Offset(0, -5)),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1),
+            blurRadius: 10, offset: const Offset(0, -5))],
       ),
       child: SafeArea(
         top: false,
         child: Column(children: [
-          _SummaryRow('Subtotal',
-              '£${subtotal.toStringAsFixed(2)}'),
+          _SummaryRow('Subtotal', '£${subtotal.toStringAsFixed(2)}'),
           const SizedBox(height: 8),
-          // Always show just the base delivery fee in the cart.
-          // No store-count multiplier here — that appears in the popup.
           if (storeCount > 1)
-            _SummaryRow(
-              'Delivery Fee',
-              '£${displayDeliveryFee.toStringAsFixed(2)} × $storeCount stores (est.)',
-              valueColor: Colors.orange,
-            )
-else
+            _SummaryRow('Delivery Fee',
+                '£${displayDeliveryFee.toStringAsFixed(2)} × $storeCount stores (est.)',
+                valueColor: Colors.orange)
+          else
             _SummaryRow('Delivery Fee',
                 '£${displayDeliveryFee.toStringAsFixed(2)} (est.)'),
-
           const Divider(height: 24),
-          _SummaryRow('Total',
-              '£${displayTotal.toStringAsFixed(2)}',
-              bold: true),
+          _SummaryRow('Total', '£${displayTotal.toStringAsFixed(2)}', bold: true),
           const SizedBox(height: 16),
           SizedBox(
-            width:  double.infinity,
-            height: 56,
+            width: double.infinity, height: 56,
             child: ElevatedButton(
               onPressed: () async {
-                // Show multi-store confirmation if needed.
-                // Only after user taps "Continue to Checkout" do we
-                // proceed with the full (multiplied) delivery fee.
                 final proceed = await onProceed();
                 if (!proceed || !context.mounted) return;
-
                 final success = await Navigator.push<bool>(
                   context,
                   MaterialPageRoute(
                     builder: (_) => CheckoutScreen(
                       cartItems:   cartItems,
                       subtotal:    subtotal,
-                      // After popup confirmation, use the real fee
                       deliveryFee: actualDeliveryFee,
                       total:       actualTotal,
                       cartMeta:    cartMeta,
@@ -629,24 +519,20 @@ class _SummaryRow extends StatelessWidget {
   final String label, value;
   final bool bold;
   final Color? valueColor;
-  const _SummaryRow(this.label, this.value,
-      {this.bold = false, this.valueColor});
+  const _SummaryRow(this.label, this.value, {this.bold = false, this.valueColor});
 
   @override
   Widget build(BuildContext context) => Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label,
-              style: TextStyle(
-                  fontSize:   bold ? 18 : 15,
-                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-                  color:      AppColors.textSecondary)),
-          Text(value,
-              style: TextStyle(
-                  fontSize:   bold ? 20 : 15,
-                  fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-                  color:      valueColor ??
-                      (bold ? AppColors.primary : AppColors.textPrimary))),
+          Text(label, style: TextStyle(
+              fontSize: bold ? 18 : 15,
+              fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+              color: AppColors.textSecondary)),
+          Text(value, style: TextStyle(
+              fontSize: bold ? 20 : 15,
+              fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+              color: valueColor ?? (bold ? AppColors.primary : AppColors.textPrimary))),
         ],
       );
 }
@@ -657,32 +543,24 @@ class _SummaryRow extends StatelessWidget {
 class _EmptyCartView extends StatelessWidget {
   final VoidCallback onBrowse;
   const _EmptyCartView({required this.onBrowse});
-
   @override
   Widget build(BuildContext context) => Center(
-        child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-          const Icon(Icons.shopping_cart_outlined,
-              size: 100, color: AppColors.textHint),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Icon(Icons.shopping_cart_outlined, size: 100, color: AppColors.textHint),
           const SizedBox(height: 24),
           const Text('Your cart is empty',
-              style: TextStyle(
-                  fontSize:   22,
-                  fontWeight: FontWeight.bold,
-                  color:      AppColors.textPrimary)),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary)),
           const SizedBox(height: 8),
           const Text('Add products to get started',
-              style: TextStyle(
-                  fontSize: 16, color: AppColors.textSecondary)),
+              style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
           const SizedBox(height: 32),
           ElevatedButton.icon(
             onPressed: onBrowse,
             icon:  const Icon(Icons.shopping_bag),
             label: const Text('Browse Products'),
             style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 32, vertical: 16)),
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16)),
           ),
         ]),
       );
@@ -695,27 +573,18 @@ class _ErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
   const _ErrorView({required this.message, required this.onRetry});
-
   @override
   Widget build(BuildContext context) => Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-            const Icon(Icons.error_outline,
-                size: 60, color: AppColors.error),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const Icon(Icons.error_outline, size: 60, color: AppColors.error),
             const SizedBox(height: 16),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 16,
-                    color:    AppColors.textSecondary)),
+            Text(message, textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, color: AppColors.textSecondary)),
             const SizedBox(height: 24),
-            ElevatedButton.icon(
-                onPressed: onRetry,
-                icon:  const Icon(Icons.refresh),
-                label: const Text('Retry')),
+            ElevatedButton.icon(onPressed: onRetry,
+                icon: const Icon(Icons.refresh), label: const Text('Retry')),
           ]),
         ),
       );
@@ -744,102 +613,175 @@ class _CartItemCard extends StatelessWidget {
     required this.onRemove,
   });
 
+  /// Extract primary image URL from the cart item's product data.
+  /// Cart items may nest product info differently from catalog items.
+  String? _imageUrl() {
+    // 1. Check item-level images array
+    final images = item['images'];
+    if (images is List && images.isNotEmpty) {
+      final typed = images.whereType<Map<String, dynamic>>().toList()
+        ..sort((a, b) {
+          final aP = a['isPrimary'] == true ? 0 : 1;
+          final bP = b['isPrimary'] == true ? 0 : 1;
+          return aP.compareTo(bP);
+        });
+      for (final img in typed) {
+        final url = (img['imageUrl'] ?? img['url'] ?? img['path'] ?? '')
+            .toString().trim();
+        if (url.isNotEmpty) {
+          debugPrint('🖼️  [_CartItemCard] "$itemName" → image from item.images: $url');
+          return url;
+        }
+      }
+    }
+
+    // 2. Check nested product images array
+    final productImages = item['product']?['images'];
+    if (productImages is List && productImages.isNotEmpty) {
+      final typed = productImages.whereType<Map<String, dynamic>>().toList()
+        ..sort((a, b) {
+          final aP = a['isPrimary'] == true ? 0 : 1;
+          final bP = b['isPrimary'] == true ? 0 : 1;
+          return aP.compareTo(bP);
+        });
+      for (final img in typed) {
+        final url = (img['imageUrl'] ?? img['url'] ?? img['path'] ?? '')
+            .toString().trim();
+        if (url.isNotEmpty) {
+          debugPrint('🖼️  [_CartItemCard] "$itemName" → image from product.images: $url');
+          return url;
+        }
+      }
+    }
+
+    // 3. Top-level imageUrl / image on item
+    final itemFallback = (item['productImage'] ?? item['primaryImageUrl'] ?? item['imageUrl'] ?? item['image'])?.toString().trim();
+    if (itemFallback != null && itemFallback.isNotEmpty) {
+      debugPrint('🖼️  [_CartItemCard] "$itemName" → image from item top-level: $itemFallback');
+      return itemFallback;
+    }
+
+    // 4. Nested product imageUrl / image
+    final productFallback =
+        (item['product']?['imageUrl'] ?? item['product']?['image'])?.toString().trim();
+    if (productFallback != null && productFallback.isNotEmpty) {
+      debugPrint('🖼️  [_CartItemCard] "$itemName" → image from product top-level: $productFallback');
+      return productFallback;
+    }
+
+    debugPrint('⚠️  [_CartItemCard] "$itemName" → NO image found.');
+    debugPrint('    item keys: ${item.keys.toList()}');
+    if (item['product'] is Map) {
+      debugPrint('    product keys: ${(item['product'] as Map).keys.toList()}');
+    }
+    return null;
+  }
+
   @override
-  Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color:        AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border:       Border.all(color: AppColors.border),
+  Widget build(BuildContext context) {
+    final resolvedUrl = _imageUrl();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color:        AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border:       Border.all(color: AppColors.border),
+      ),
+      child: Row(children: [
+        // ── Product image ──────────────────────────────
+        SizedBox(
+          width: 60, height: 60,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: resolvedUrl != null
+                ? AuthImage(
+                    url: resolvedUrl,
+                    fit: BoxFit.cover,
+                    width: 60,
+                    height: 60,
+                    placeholder: Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceLight,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Center(
+                          child: Icon(icon, size: 32, color: AppColors.primary)),
+                    ),
+                    errorWidget: Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceLight,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Center(
+                          child: Icon(icon, size: 32, color: AppColors.primary)),
+                    ),
+                  )
+                : Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceLight,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Center(
+                        child: Icon(icon, size: 32, color: AppColors.primary)),
+                  ),
+          ),
         ),
-        child: Row(children: [
-          Container(
-            width:  60,
-            height: 60,
-            decoration: BoxDecoration(
-              color:        AppColors.surfaceLight,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, size: 32, color: AppColors.primary),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Text(itemName,
-                  style: const TextStyle(
-                      fontSize:   15,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary)),
-              const SizedBox(height: 4),
-              Text('£${price.toStringAsFixed(2)} per $unit',
-                  style: const TextStyle(
-                      fontSize: 13, color: AppColors.textSecondary)),
-              const SizedBox(height: 8),
-              Text('£${(price * quantity).toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      fontSize:   16,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.primary)),
-            ]),
-          ),
-          Column(children: [
-            Row(children: [
-              _QtyBtn(
-                  icon:   Icons.remove,
-                  bg:     AppColors.surface,
-                  fg:     AppColors.textPrimary,
-                  onTap:  onDecrease,
-                  border: true),
-              SizedBox(
-                width: 40,
-                child: Center(
-                  child: Text('$quantity',
-                      style: const TextStyle(
-                          fontSize:   16,
-                          fontWeight: FontWeight.bold,
-                          color:      AppColors.textPrimary)),
-                ),
-              ),
-              _QtyBtn(
-                  icon:  Icons.add,
-                  bg:    AppColors.primary,
-                  fg:    AppColors.white,
-                  onTap: onIncrease),
-            ]),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(itemName,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary)),
+            const SizedBox(height: 4),
+            Text('£${price.toStringAsFixed(2)} per $unit',
+                style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
             const SizedBox(height: 8),
-            TextButton(
-              onPressed: onRemove,
-              style: TextButton.styleFrom(
-                  padding:       EdgeInsets.zero,
-                  minimumSize:   const Size(0, 0),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-              child: const Text('Remove',
-                  style: TextStyle(
-                      fontSize: 12, color: AppColors.error)),
-            ),
+            Text('£${(price * quantity).toStringAsFixed(2)}',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
+                    color: AppColors.primary)),
           ]),
+        ),
+        Column(children: [
+          Row(children: [
+            _QtyBtn(icon: Icons.remove, bg: AppColors.surface,
+                fg: AppColors.textPrimary, onTap: onDecrease, border: true),
+            SizedBox(width: 40, child: Center(
+              child: Text('$quantity', style: const TextStyle(fontSize: 16,
+                  fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+            )),
+            _QtyBtn(icon: Icons.add, bg: AppColors.primary,
+                fg: AppColors.white, onTap: onIncrease),
+          ]),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: onRemove,
+            style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 0),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            child: const Text('Remove',
+                style: TextStyle(fontSize: 12, color: AppColors.error)),
+          ),
         ]),
-      );
+      ]),
+    );
+  }
 }
 
 class _QtyBtn extends StatelessWidget {
   final IconData icon; final Color bg, fg;
   final VoidCallback onTap; final bool border;
-  const _QtyBtn({
-    required this.icon, required this.bg,
-    required this.fg, required this.onTap, this.border = false,
-  });
+  const _QtyBtn({required this.icon, required this.bg,
+      required this.fg, required this.onTap, this.border = false});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
         child: Container(
-          width:  32, height: 32,
+          width: 32, height: 32,
           decoration: BoxDecoration(
-            color:        bg,
+            color: bg,
             borderRadius: BorderRadius.circular(8),
             border: border ? Border.all(color: AppColors.border) : null,
           ),
