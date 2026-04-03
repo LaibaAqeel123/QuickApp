@@ -30,7 +30,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   List<Map<String, dynamic>> _addresses          = [];
   Map<String, dynamic>?      _selectedAddress;
   bool                       _isLoadingAddresses = true;
-  // INCOMING: track whether address came from map picker
   bool                       _isMapPickedAddress = false;
 
   final _instructionsCtrl  = TextEditingController();
@@ -51,7 +50,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.dispose();
   }
 
-  // ── Load addresses ─────────────────────────────────────
   Future<void> _loadAddresses() async {
     setState(() => _isLoadingAddresses = true);
     final result = await AuthService.instance.getAddresses();
@@ -102,7 +100,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
-  // INCOMING: map location picker — saves address via API then selects it
   Future<void> _pickLocationFromMap() async {
     final picked = await Navigator.push<Map<String, dynamic>>(
       context,
@@ -134,7 +131,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         _isMapPickedAddress = true;
         _isLoadingAddresses = false;
       });
-      // Refresh address list and re-select the saved one
       _loadAddresses().then((_) {
         if (!mounted || _selectedAddress == null) return;
         final savedId =
@@ -152,7 +148,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         }
       });
     } else {
-      // Fallback: use the raw map pick without a backend addressId
       setState(() {
         _selectedAddress    = picked;
         _isMapPickedAddress = true;
@@ -194,7 +189,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
-  // ── Deep order-id extractor ────────────────────────────
   String? _extractOrderId(Map<String, dynamic>? data) {
     if (data == null) return null;
     const keys = [
@@ -224,6 +218,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         if (v != null && v.toString().isNotEmpty) return v.toString();
       }
     }
+
     String? deep(dynamic node, int depth) {
       if (depth > 5) return null;
       if (node is Map<String, dynamic>) {
@@ -246,23 +241,15 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
 
     final d = deep(data, 0);
-    // INCOMING: debug print on not found
-    if (d == null) debugPrint('❌ [orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    if (d == null) {
+      debugPrint('❌ [orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    }
     return d;
   }
 
   // ══════════════════════════════════════════════════════
-  //  PLACE ORDER
-  //
-  //  CURRENT flow kept:
-  //    1. Validate address
-  //    2. INCOMING: warn if multi-supplier
-  //    3. Call checkout API → get orderId
-  //    4. Navigate to PaymentScreen with orderId
-  //
-  //  INCOMING's flow (skip checkout, pass address to PaymentScreen)
-  //  was REJECTED because PaymentScreen needs the orderId from
-  //  the checkout API response to create a Stripe PaymentIntent.
+  //  PLACE ORDER — no multi-supplier popup, calls checkout
+  //  API first to get orderId for Stripe PaymentIntent.
   // ══════════════════════════════════════════════════════
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
@@ -270,12 +257,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       return;
     }
 
-    
-    
-
     setState(() => _isPlacingOrder = true);
 
-    // CURRENT: call checkout API to get orderId for Stripe
     final result = await AuthService.instance.checkout(
       deliveryAddressId:   _deliveryAddressId!,
       billingAddressId:    _deliveryAddressId!,
@@ -317,9 +300,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         duration:        const Duration(seconds: 4),
       ));
 
-  // ══════════════════════════════════════════════════════
-  //  BUILD
-  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -337,7 +317,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
 
-              // ── 1. Delivery Address ─────────────────────
               _Section(
                 title: 'Delivery Address',
                 icon:  Icons.location_on,
@@ -363,14 +342,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               onAdd:        _addNewAddress,
                             ),
                           const SizedBox(height: 12),
-                          // INCOMING: use current location button
                           _UseLocationButton(onTap: _pickLocationFromMap),
                         ],
                       ),
               ),
               const SizedBox(height: 16),
 
-              // ── 2. Special Instructions ─────────────────
               _Section(
                 title: 'Special Instructions',
                 icon:  Icons.note_alt_outlined,
@@ -384,7 +361,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 3. Discount Code ────────────────────────
               _Section(
                 title: 'Discount Code',
                 icon:  Icons.local_offer_outlined,
@@ -427,7 +403,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 4. Order Summary ────────────────────────
               _Section(
                 title: 'Order Summary',
                 icon:  Icons.receipt,
@@ -506,7 +481,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 24),
 
-              // ── Proceed to Payment ──────────────────────
               SizedBox(
                 height: 56,
                 child: ElevatedButton(
@@ -529,8 +503,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                             SizedBox(width: 12),
                             Text('Processing...',
                                 style: TextStyle(
-                                    fontSize:   16,
-                                    fontWeight: FontWeight.bold)),
+                                    fontSize: 16, fontWeight: FontWeight.bold)),
                           ],
                         )
                       : Row(
@@ -571,16 +544,23 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   InputDecoration _inputDeco(String hint) => InputDecoration(
         hintText:  hint,
         hintStyle: const TextStyle(color: AppColors.textHint),
-        filled:    true, fillColor: AppColors.background,
+        filled:    true,
+        fillColor: AppColors.background,
         contentPadding: const EdgeInsets.all(12),
-        border:        OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.border)),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: AppColors.border)),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: AppColors.border)),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
       );
 }
 
 // ══════════════════════════════════════════════════════════
-//  INCOMING: Use Current Location button
+//  Use Current Location button
 // ══════════════════════════════════════════════════════════
 class _UseLocationButton extends StatelessWidget {
   final VoidCallback onTap;
@@ -601,24 +581,26 @@ class _UseLocationButton extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.12),
+                color:        AppColors.primary.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(Icons.my_location,
-                  color: AppColors.primary, size: 18),
+              child: Icon(Icons.my_location, color: AppColors.primary, size: 18),
             ),
             const SizedBox(width: 10),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Text('Use Current Location',
-                  style: TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w700,
-                      color: AppColors.primary)),
-              Text('Pick on map & auto-fill address',
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: AppColors.primary.withOpacity(0.7))),
-            ])),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text('Use Current Location',
+                    style: TextStyle(
+                        fontSize:   14,
+                        fontWeight: FontWeight.w700,
+                        color:      AppColors.primary)),
+                Text('Pick on map & auto-fill address',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color:    AppColors.primary.withOpacity(0.7))),
+              ]),
+            ),
             Icon(Icons.chevron_right, color: AppColors.primary, size: 20),
           ]),
         ),
@@ -631,6 +613,7 @@ class _UseLocationButton extends StatelessWidget {
 class _Section extends StatelessWidget {
   final String title; final IconData icon; final Widget child;
   const _Section({required this.title, required this.icon, required this.child});
+
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.all(16),
@@ -651,13 +634,20 @@ class _Section extends StatelessWidget {
         ]));
 }
 
-// INCOMING: enhanced AddressTile with isMapPicked support
 class _AddressTile extends StatelessWidget {
-  final String label, address; final IconData icon;
-  final bool isDefault, isMapPicked; final VoidCallback onChange;
+  final String   label, address;
+  final IconData icon;
+  final bool     isDefault, isMapPicked;
+  final VoidCallback onChange;
+
   const _AddressTile({
-    required this.label, required this.address, required this.icon,
-    required this.isDefault, required this.isMapPicked, required this.onChange});
+    required this.label,
+    required this.address,
+    required this.icon,
+    required this.isDefault,
+    required this.isMapPicked,
+    required this.onChange,
+  });
 
   @override
   Widget build(BuildContext context) =>
@@ -709,8 +699,8 @@ class _AddressTile extends StatelessWidget {
         TextButton(
           onPressed: onChange,
           style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            minimumSize: const Size(0, 0),
+            padding:       const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize:   const Size(0, 0),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           child: const Text('Change'),
@@ -719,8 +709,15 @@ class _AddressTile extends StatelessWidget {
 }
 
 class _NoAddress extends StatelessWidget {
-  final bool hasAddresses; final VoidCallback onSelect, onAdd;
-  const _NoAddress({required this.hasAddresses, required this.onSelect, required this.onAdd});
+  final bool         hasAddresses;
+  final VoidCallback onSelect, onAdd;
+
+  const _NoAddress({
+    required this.hasAddresses,
+    required this.onSelect,
+    required this.onAdd,
+  });
+
   @override
   Widget build(BuildContext context) =>
       Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -752,7 +749,9 @@ class _NoAddress extends StatelessWidget {
 }
 
 class _Loading extends StatelessWidget {
-  final String label; const _Loading({required this.label});
+  final String label;
+  const _Loading({required this.label});
+
   @override
   Widget build(BuildContext context) => Row(children: [
     const SizedBox(width: 20, height: 20,
@@ -764,18 +763,20 @@ class _Loading extends StatelessWidget {
 }
 
 class _SummRow extends StatelessWidget {
-  final String title, value; final bool bold;
+  final String title, value;
+  final bool   bold;
   const _SummRow(this.title, this.value, {this.bold = false});
+
   @override
   Widget build(BuildContext context) =>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(title, style: TextStyle(
-            fontSize: bold ? 16 : 14,
+            fontSize:   bold ? 16 : 14,
             fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-            color: AppColors.textPrimary)),
+            color:      AppColors.textPrimary)),
         Text(value, style: TextStyle(
-            fontSize: bold ? 18 : 15,
+            fontSize:   bold ? 18 : 15,
             fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-            color: bold ? AppColors.primary : AppColors.textPrimary)),
+            color:      bold ? AppColors.primary : AppColors.textPrimary)),
       ]);
 }
