@@ -1891,81 +1891,47 @@ class AuthService {
   /// When the user attaches photos we fall back to multipart/form-data.
   /// Sending multipart without images caused a 415 Unsupported Media Type.
   Future<ApiResult<Map<String, dynamic>>> raiseDispute({
-    required String       orderId,
-    required int          disputeType,
-    required String       reason,
-    String?               paymentId,
-    List<List<int>>?      photoBytes,
-    List<String>?         photoNames,
-  }) async {
-    try {
-      const url = 'https://api.neptasolutions.co.uk/api/disputes';
-      _log('RAISE DISPUTE REQUEST', url,
-          extra: 'orderId: $orderId | type: $disputeType | '
-              'hasPhotos: ${(photoBytes?.isNotEmpty ?? false)}');
+  required String orderId,
+  required int    disputeType,
+  required String reason,
+  String?         paymentId,
+  List<List<int>>? photoBytes,   // kept in signature so no other files break
+  List<String>?    photoNames,   // kept in signature so no other files break
+}) async {
+  try {
+    const url = 'https://api.neptasolutions.co.uk/api/disputes';
+    _log('RAISE DISPUTE REQUEST', url,
+        extra: 'orderId: $orderId | type: $disputeType');
 
-      final hasPhotos =
-          photoBytes != null && photoBytes.isNotEmpty;
-
-      http.Response response;
-
-      if (!hasPhotos) {
-        // ── No images → send as JSON (required by backend) ──────────────
-        final body = <String, dynamic>{
-          'orderId':     orderId,
-          'disputeType': disputeType,
-          'reason':      reason,
-        };
-        if (paymentId != null && paymentId.isNotEmpty) {
-          body['paymentId'] = paymentId;
-        }
-
-        response = await http
-            .post(
-              Uri.parse(url),
-              headers: await _authHeaders, // includes Content-Type: application/json
-              body:    jsonEncode(body),
-            )
-            .timeout(const Duration(seconds: 30));
-      } else {
-        // ── Has images → multipart/form-data ────────────────────────────
-        final token = await getAccessToken();
-        final request = http.MultipartRequest('POST', Uri.parse(url));
-        if (token != null) {
-          request.headers['Authorization'] = 'Bearer $token';
-          request.headers['Accept']        = 'application/json';
-        }
-        request.fields['orderId']     = orderId;
-        request.fields['disputeType'] = disputeType.toString();
-        request.fields['reason']      = reason;
-        if (paymentId != null && paymentId.isNotEmpty) {
-          request.fields['paymentId'] = paymentId;
-        }
-        for (int i = 0; i < photoBytes.length; i++) {
-          request.files.add(http.MultipartFile.fromBytes(
-            'files',
-            photoBytes[i],
-            filename: (photoNames != null && i < photoNames.length)
-                ? photoNames[i]
-                : 'evidence_$i.jpg',
-          ));
-        }
-        final streamed = await request.send().timeout(const Duration(seconds: 60));
-        response = await http.Response.fromStream(streamed);
-      }
-
-      _log('RAISE DISPUTE RESPONSE', url,
-          status: response.statusCode, body: response.body);
-
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        return ApiResult(success: true, data: _safeJsonDecode(response.body));
-      }
-      return ApiResult(success: false,
-          message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
-    } on Exception catch (e) {
-      return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
+    final body = <String, dynamic>{
+      'orderId':     orderId,
+      'disputeType': disputeType,
+      'reason':      reason,
+    };
+    if (paymentId != null && paymentId.isNotEmpty) {
+      body['paymentId'] = paymentId;
     }
+
+    final response = await http
+        .post(
+          Uri.parse(url),
+          headers: await _authHeaders,
+          body:    jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 30));
+
+    _log('RAISE DISPUTE RESPONSE', url,
+        status: response.statusCode, body: response.body);
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return ApiResult(success: true, data: _safeJsonDecode(response.body));
+    }
+    return ApiResult(success: false,
+        message: _errorMessage(_safeJsonDecode(response.body), response.statusCode));
+  } on Exception catch (e) {
+    return ApiResult(success: false, message: _friendlyNetworkError(e.toString()));
   }
+}
 
   /// GET /api/disputes?page=1&pageSize=10
   Future<ApiResult<Map<String, dynamic>>> getMyDisputes({

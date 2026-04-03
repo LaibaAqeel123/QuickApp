@@ -41,6 +41,12 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   Timer? _pollTimer;
   bool _signalRDeliveredLocation = false;
 
+  // ── FIX 2: track the effective display status separately ──
+  // This allows delivery-record status to override order status
+  // for the "Out for Delivery" midpoint that the order status API
+  // misses when the driver confirms pickup.
+  String? _effectiveStatus; // null = use _statusLabel from order data
+
   late AnimationController _pulseController;
   late Animation<double>    _pulseAnimation;
 
@@ -95,7 +101,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     } catch (_) { return raw.toString(); }
   }
 
-  // Change 1 — _statusLabel getter — add status 8
   String get _statusLabel {
     final raw = _src['status'] ?? _src['orderStatus'];
     if (raw is String) return raw;
@@ -114,22 +119,21 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     return 'Processing';
   }
 
-  // ══════════════════════════════════════════════════════
-  //  SUPPLIER NAME — fixed
-  // ══════════════════════════════════════════════════════
+  // ── FIX 2: This is what we actually show in the UI.
+  // If the delivery record says the driver picked up (Out for Delivery),
+  // we show that even if the order status API hasn't caught up yet.
+  String get _displayStatus => _effectiveStatus ?? _statusLabel;
+
   String get _supplierName {
-    // 1. Top-level supplierName
     final top = _src['supplierName']?.toString() ?? '';
     if (top.isNotEmpty) return top;
 
-    // 2. Nested supplier object
     final supplierObj = _src['supplier'];
     if (supplierObj is Map) {
       final n = supplierObj['name']?.toString() ?? '';
       if (n.isNotEmpty) return n;
     }
 
-    // 3 & 4. First item's supplierName (confirmed in logs)
     for (final key in ['items', 'orderItems']) {
       final list = _src[key];
       if (list is List && list.isNotEmpty) {
@@ -140,7 +144,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
             debugPrint('🏪 [supplierName] found in $key[0].supplierName: $n');
             return n;
           }
-          // Also check nested supplier object inside item
           final itemSupplier = firstItem['supplier'];
           if (itemSupplier is Map) {
             final ns = itemSupplier['name']?.toString() ?? '';
@@ -150,15 +153,12 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       }
     }
 
-    // 5. vendor field
     final vendor = _src['vendor']?.toString() ?? '';
     if (vendor.isNotEmpty) return vendor;
 
-    // 6. Fallback
     return 'Supplier';
   }
 
-  // ── Extract full item list from order ────────────────
   List<Map<String, dynamic>> get _orderItems {
     final items = _src['items'] ?? _src['orderItems'];
     if (items is List) {
@@ -206,7 +206,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
   Map<String, dynamic>? get _driver =>
       _src['driver'] as Map<String, dynamic>?;
 
-  // Change 2 — Add helper getters for supplier delivery fields
   bool get _isSupplierDelivery =>
       _src['isSupplierDelivery'] == true;
 
@@ -232,7 +231,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
 
   bool _isAtLeast(String min) {
     const order = ['processing', 'out for delivery', 'delivered'];
-    var curLabel = _statusLabel.toLowerCase();
+    var curLabel = _displayStatus.toLowerCase();
     if (curLabel == 'completed' || curLabel == 'sent to driver') {
       curLabel = 'processing';
     }
@@ -242,22 +241,46 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     return cur >= m;
   }
 
-  // Change 3 — _computeDriverEnRoute — supplier delivery should NOT trigger map
   bool _computeDriverEnRoute() {
     if (_isSupplierDelivery) return false;
-    final s = _statusLabel.toLowerCase();
+    final s = _displayStatus.toLowerCase();
     return s == 'out for delivery';
   }
 
+  // ── FIX 2: Expanded pickup detection ──────────────────
+  // Checks both the delivery status string AND numeric codes
+  // so that when the driver confirms pickup, we immediately
+  // surface "Out for Delivery" even before the order-status
+  // API reflects it.
   bool _isPickedUpFromDelivery(Map<String, dynamic>? d) {
     if (d == null) return false;
     final raw =
-    (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase();
-    return raw == 'pickedup' ||
-        raw == 'picked_up' ||
-        raw == '4' ||
-        raw == 'outfordelivery' ||
-        raw == 'out_for_delivery';
+    (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase().trim();
+
+    // Numeric string check
+    if (raw == '4') return true;
+
+    // Normalised string check
+    final normalised = raw.replaceAll(RegExp(r'[\s_\-]'), '');
+    return normalised == 'pickedup'   ||
+           normalised == 'pickeddup'  ||
+           normalised == 'intransit'  ||
+           normalised == 'ontheway'   ||
+           normalised == 'enroute'    ||
+           normalised == 'outfordelivery' ||
+           normalised == 'out_for_delivery';
+  }
+
+  // ── FIX 2: Check if delivery record says "delivered" ──
+  bool _isDeliveredFromDelivery(Map<String, dynamic>? d) {
+    if (d == null) return false;
+    final raw =
+    (d['deliveryStatus'] ?? d['status'] ?? '').toString().toLowerCase().trim();
+    if (raw == '5') return true;
+    final normalised = raw.replaceAll(RegExp(r'[\s_\-]'), '');
+    return normalised == 'delivered' ||
+           normalised == 'completed' ||
+           normalised == 'done';
   }
 
   String _formatEta(double minutes) {
@@ -330,9 +353,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
 
     if (r.success && r.data != null) {
       setState(() {
-        _detail          = r.data;
-        _isLoading       = false;
-        _isDriverEnRoute = _computeDriverEnRoute();
+        _detail    = r.data;
+        _isLoading = false;
       });
 
       final addr = _detail?['deliveryAddress'];
@@ -344,6 +366,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         }
       }
 
+      // ── FIX 2: Always fetch the delivery record so we can
+      // detect the pickup/out-for-delivery status even when the
+      // order-status API hasn't updated yet.
       final deliveryResult =
       await AuthService.instance.getDeliveryByOrderId(_orderId);
       if (deliveryResult.success && deliveryResult.data != null) {
@@ -352,17 +377,57 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
         if (dId.isNotEmpty) {
           setState(() => _detail = {...?_detail, 'deliveryId': dId});
         }
-        _tryUpdateLocationFromDelivery(delivery);
+
+        // Determine effective display status from delivery record
+        _applyDeliveryStatus(delivery);
+
         final driverPickedUp = _isPickedUpFromDelivery(delivery);
+        _tryUpdateLocationFromDelivery(delivery);
+
         if (driverPickedUp && dId.isNotEmpty) {
           setState(() => _isDriverEnRoute = true);
           _startPolling();
           await _connectSignalR();
+        } else {
+          // Even if not yet picked up, recompute enRoute from effective status
+          setState(() => _isDriverEnRoute = _computeDriverEnRoute());
         }
+      } else {
+        setState(() => _isDriverEnRoute = _computeDriverEnRoute());
       }
     } else {
       setState(() { _isLoading = false; _error = r.message; });
     }
+  }
+
+  // ── FIX 2: Apply the delivery record's status as the effective
+  // display status so "Out for Delivery" appears immediately when
+  // the driver confirms pickup, without waiting for the order API.
+  void _applyDeliveryStatus(Map<String, dynamic> delivery) {
+    if (_isDeliveredFromDelivery(delivery)) {
+      if (mounted) {
+        setState(() {
+          _effectiveStatus = 'Delivered';
+          _isDriverEnRoute = false;
+          _driverLocation  = null;
+          _etaMinutes      = null;
+          _routePoints     = [];
+        });
+      }
+      return;
+    }
+
+    if (_isPickedUpFromDelivery(delivery)) {
+      if (mounted) {
+        setState(() {
+          _effectiveStatus = 'Out for Delivery';
+          _isDriverEnRoute = !_isSupplierDelivery;
+        });
+      }
+      return;
+    }
+
+    // Otherwise keep the order's own status (don't set _effectiveStatus)
   }
 
   void _tryUpdateLocationFromDelivery(Map<String, dynamic> delivery) {
@@ -393,14 +458,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       if (!mounted) return;
       if (result.success && result.data != null) {
         final delivery = result.data!;
-        final status   = (delivery['deliveryStatus'] ?? '').toString().toLowerCase();
-        if (status == 'delivered' || status == '5') {
-          setState(() {
-            _isDriverEnRoute = false;
-            _driverLocation  = null;
-            _etaMinutes      = null;
-            _routePoints     = [];
-          });
+        _applyDeliveryStatus(delivery);
+
+        if (_isDeliveredFromDelivery(delivery)) {
           _pollTimer?.cancel();
           return;
         }
@@ -436,6 +496,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
           _driverLocation  = LatLng(lat!, lng!);
           if (eta != null && eta > 0 && eta < 600) _etaMinutes = eta;
           _isDriverEnRoute = true;
+          // ── FIX 2: SignalR sending location = driver is en-route
+          if (_effectiveStatus != 'Delivered') {
+            _effectiveStatus = 'Out for Delivery';
+          }
         });
         if (prev == null ||
             (_driverLocation!.latitude - prev.latitude).abs() > 0.001 ||
@@ -467,12 +531,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                 .toString().toLowerCase();
             if ((s == 'delivered' || s == '5') && mounted) {
               setState(() {
+                _effectiveStatus = 'Delivered';
                 _isDriverEnRoute = false;
                 _driverLocation  = null;
                 _etaMinutes      = null;
                 _routePoints     = [];
               });
               _pollTimer?.cancel();
+            } else if ((s == 'pickedup' || s == 'outfordelivery' ||
+                        s == 'intransit' || s == '4') && mounted) {
+              // ── FIX 2: Catch pickup event from SignalR too
+              setState(() {
+                _effectiveStatus = 'Out for Delivery';
+                _isDriverEnRoute = !_isSupplierDelivery;
+              });
             }
           }
         } catch (e) { debugPrint('❌ [$name] error: $e'); }
@@ -797,11 +869,10 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     );
   }
 
-  // Change 5 — _buildSupplierTimelineCard method
   Widget _buildSupplierTimelineCard() {
-    final isDelivered = _statusLabel.toLowerCase() == 'delivered' ||
-        _statusLabel.toLowerCase() == 'completed';
-    final isOutForDelivery = _statusLabel.toLowerCase() == 'out for delivery';
+    final isDelivered = _displayStatus.toLowerCase() == 'delivered' ||
+        _displayStatus.toLowerCase() == 'completed';
+    final isOutForDelivery = _displayStatus.toLowerCase() == 'out for delivery';
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -832,7 +903,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-        // Icon + Title row
         Row(children: [
           Container(
             padding: const EdgeInsets.all(10),
@@ -870,7 +940,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
               ])),
         ]),
 
-        // Estimated delivery time
         if (_estimatedDeliveryTime != null && !isDelivered) ...[
           const SizedBox(height: 16),
           Container(
@@ -901,7 +970,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
           ),
         ],
 
-        // Note about no live tracking
         if (isOutForDelivery) ...[
           const SizedBox(height: 12),
           Row(children: const [
@@ -918,9 +986,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
     );
   }
 
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   //  BUILD
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     if (_isFullScreen) {
@@ -932,7 +1000,9 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
       );
     }
 
-    final isDelivered = _statusLabel.toLowerCase() == 'delivered';
+    // ── FIX 2: Use _displayStatus everywhere in build ──
+    final displayStatus = _displayStatus;
+    final isDelivered   = displayStatus.toLowerCase() == 'delivered';
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -1021,7 +1091,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                     ]),
                   ),
 
-                // Change 4 — Map or Timeline card
+                // Map or supplier timeline card
                 if (_isSupplierDelivery)
                   _buildSupplierTimelineCard()
                 else
@@ -1042,17 +1112,20 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                       borderRadius: BorderRadius.circular(16),
                       child: _isDriverEnRoute
                           ? _buildMap()
-                          : _MapPlaceholder(statusLabel: _statusLabel),
+                          : _MapPlaceholder(statusLabel: displayStatus),
                     ),
                   ),
 
-                // Change 6 — Driver card — only show for driver delivery
+                // Driver card — only for driver delivery
                 if (!_isSupplierDelivery &&
                     (_driver != null ||
-                        _statusLabel.toLowerCase() == 'out for delivery'))
+                        displayStatus.toLowerCase() == 'out for delivery'))
                   _DriverCard(driver: _driver),
 
-                // Order Status steps
+                // ── FIX 1: Order Status steps — REMOVED duplicate steps.
+                // The original code had two "_Step(Out for Delivery)" and
+                // two "_Step(Delivered)" widgets. Now there is exactly one
+                // of each, driven by _displayStatus / _isAtLeast().
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start,
@@ -1074,21 +1147,8 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         _Step(
                             title:    'Out for Delivery',
                             subtitle: 'Driver is on the way',
-                            completed: _statusLabel.toLowerCase() == 'delivered',
-                            active:    _statusLabel.toLowerCase() == 'out for delivery',
-                            icon: Icons.local_shipping),
-                        _Step(
-                            title:    'Delivered',
-                            subtitle: 'Order has been delivered',
-                            completed: _statusLabel.toLowerCase() == 'delivered',
-                            active: false,
-                            icon: Icons.check_circle,
-                            isLast: true),
-                        _Step(
-                            title:    'Out for Delivery',
-                            subtitle: 'Driver is on the way',
                             completed: _isAtLeast('delivered'),
-                            active:    _statusLabel.toLowerCase() == 'out for delivery',
+                            active:    displayStatus.toLowerCase() == 'out for delivery',
                             icon: Icons.local_shipping),
                         _Step(
                             title:    'Delivered',
@@ -1167,7 +1227,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         ]),
                         const SizedBox(height: 14),
 
-                        // Order meta rows
                         _DRow(
                             icon:  Icons.tag,
                             label: 'Order ID',
@@ -1175,7 +1234,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                                 ? _orderNumber
                                 : _orderId),
                         const SizedBox(height: 10),
-                        // ── Supplier name (fixed) ──────────
                         _DRow(
                             icon:  Icons.store,
                             label: 'Supplier',
@@ -1189,7 +1247,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                         ],
                         const SizedBox(height: 16),
 
-                        // Items section
                         if (_orderItems.isNotEmpty) ...[
                           const Text('Items Ordered',
                               style: TextStyle(
@@ -1211,7 +1268,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen>
                           const SizedBox(height: 10),
                         ],
 
-                        // Price breakdown
                         const Text('Price Breakdown',
                             style: TextStyle(
                                 fontSize: 14,
@@ -1281,7 +1337,6 @@ class _ItemRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Image
         if (imgUrl != null && imgUrl.isNotEmpty)
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
@@ -1296,7 +1351,6 @@ class _ItemRow extends StatelessWidget {
           _itemIconBox(),
         const SizedBox(width: 12),
 
-        // Name + note + qty
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(name,
@@ -1324,7 +1378,6 @@ class _ItemRow extends StatelessWidget {
               ),
             ])),
 
-        // Subtotal
         Text(
           subtotal > 0 ? '£${subtotal.toStringAsFixed(2)}' : '×$qty',
           style: const TextStyle(
@@ -1352,7 +1405,6 @@ class _PriceRow extends StatelessWidget {
   final bool   isBold;
   final Color? color;
 
-  // Allow both named-positional (label/value) and original (title/value) patterns
   const _PriceRow({
     String? label,
     String? title,
@@ -1384,7 +1436,6 @@ class _MapPlaceholder extends StatelessWidget {
   final String statusLabel;
   const _MapPlaceholder({required this.statusLabel});
 
-  // Change 7 — add 'out for delivery' case
   String get _message {
     switch (statusLabel.toLowerCase()) {
       case 'processing':       return 'Order is being prepared';

@@ -3,7 +3,6 @@ import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/category_products_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/product_detail_screen.dart';
-import 'package:food_delivery_app/presentation/buyer/screens/supplier_detail_screen.dart';
 
 class BuyerHomeScreen extends StatefulWidget {
   final void Function({String? searchQuery}) onBrowseTap;
@@ -89,10 +88,6 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     }
   }
 
-  // ── KEY FIX: Robust category ID extraction ─────────────
-  // The API may return either 'categoryId' OR 'id' as the int key.
-  // We check all common field names so the correct ID always reaches
-  // getCatalogProducts, filtering products to the right category.
   int? _extractCategoryId(Map<String, dynamic> cat) {
     for (final key in ['categoryId', 'id', 'category_id', 'CategoryId', 'Id']) {
       final v = cat[key];
@@ -102,14 +97,13 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
         if (parsed != null) return parsed;
       }
     }
-    return null; // truly missing — should not happen with real API data
+    return null;
   }
 
   void _openCategory(Map<String, dynamic> cat) {
     final name  = cat['name']?.toString() ?? '';
     final intId = _extractCategoryId(cat);
 
-    // Warn in debug if ID is missing (helps catch API shape changes)
     assert(intId != null,
         '[BuyerHomeScreen] Category "$name" has no parseable ID — '
         'products will not be filtered. Raw cat: $cat');
@@ -171,12 +165,12 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                       decoration: BoxDecoration(
                           color: AppColors.white, borderRadius: BorderRadius.circular(12)),
-                      child: Row(children: [
-                        const Icon(Icons.search, color: AppColors.textHint),
-                        const SizedBox(width: 12),
-                        const Expanded(child: Text('Search products, suppliers...',
+                      child: const Row(children: [
+                        Icon(Icons.search, color: AppColors.textHint),
+                        SizedBox(width: 12),
+                        Expanded(child: Text('Search products, suppliers...',
                             style: TextStyle(color: AppColors.textHint, fontSize: 15))),
-                        const Icon(Icons.tune, color: AppColors.textHint, size: 20),
+                        Icon(Icons.tune, color: AppColors.textHint, size: 20),
                       ]),
                     ),
                   ),
@@ -271,40 +265,6 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                           );
                         },
                       ),
-              ),
-
-              // ── Nearby Suppliers ────────────────────────
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('Nearby Suppliers', style: TextStyle(fontSize: 18,
-                        fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
-                    TextButton(
-                        onPressed: () => widget.onBrowseTap(),
-                        child: const Text('View All')),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 210,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: 5,
-                  itemBuilder: (_, i) => _SupplierCard(
-                    name:     'Premium Wholesale ${i + 1}',
-                    distance: '${(i + 1) * 0.5} km',
-                    rating:   4.5 + (i * 0.1),
-                    products: '250+',
-                    onTap: () => Navigator.push(context, MaterialPageRoute(
-                      builder: (_) => SupplierDetailScreen(
-                          supplierName: 'Premium Wholesale ${i + 1}'),
-                    )),
-                  ),
-                ),
               ),
 
               // ── Featured Products ───────────────────────
@@ -462,71 +422,6 @@ class _CategoryCard extends StatelessWidget {
               textAlign: TextAlign.center, maxLines: 2,
               overflow: TextOverflow.ellipsis)),
         )),
-      ]),
-    ),
-  );
-}
-
-// ══════════════════════════════════════════════════════════
-//  SUPPLIER CARD
-// ══════════════════════════════════════════════════════════
-class _SupplierCard extends StatelessWidget {
-  final String name, distance, products;
-  final double rating;
-  final VoidCallback onTap;
-  const _SupplierCard({required this.name, required this.distance,
-      required this.rating, required this.products, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      width: 210,
-      margin: const EdgeInsets.only(right: 12, left: 4, top: 4, bottom: 4),
-      decoration: BoxDecoration(
-        color: AppColors.surface, borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05),
-            blurRadius: 10, offset: const Offset(0, 4))],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(height: 95,
-          decoration: const BoxDecoration(color: AppColors.surfaceLight,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-          child: const Center(
-              child: Icon(Icons.store, size: 48, color: AppColors.primary))),
-        Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(name, style: const TextStyle(fontSize: 13,
-                fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 6),
-            Row(children: [
-              const Icon(Icons.star, size: 13, color: AppColors.warning),
-              const SizedBox(width: 3),
-              Text(rating.toStringAsFixed(1), style: const TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary)),
-              const SizedBox(width: 8),
-              const Icon(Icons.location_on, size: 13, color: AppColors.textHint),
-              const SizedBox(width: 3),
-              Text(distance, style: const TextStyle(
-                  fontSize: 11, color: AppColors.textSecondary)),
-            ]),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text('$products Products', style: const TextStyle(
-                  fontSize: 10, fontWeight: FontWeight.w600,
-                  color: AppColors.primary)),
-            ),
-          ]),
-        ),
       ]),
     ),
   );

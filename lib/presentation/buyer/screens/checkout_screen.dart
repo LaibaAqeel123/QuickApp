@@ -3,6 +3,7 @@ import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/address_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/address_bottom_sheet.dart';
+import 'package:food_delivery_app/presentation/buyer/screens/map_location_picker_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/payment_screen.dart';
 
 class CheckoutScreen extends StatefulWidget {
@@ -26,20 +27,15 @@ class CheckoutScreen extends StatefulWidget {
 }
 
 class _CheckoutScreenState extends State<CheckoutScreen> {
-  // ── Address ────────────────────────────────────────────
   List<Map<String, dynamic>> _addresses          = [];
   Map<String, dynamic>?      _selectedAddress;
   bool                       _isLoadingAddresses = true;
+  bool                       _isMapPickedAddress = false;
 
-  // ── Form fields that map directly to API params ────────
-  // POST /api/orders/checkout accepts:
-  //   deliveryAddressId, billingAddressId,
-  //   specialInstructions, discountCode
-  final _instructionsCtrl = TextEditingController();
-  final _discountCtrl     = TextEditingController();
+  final _instructionsCtrl  = TextEditingController();
+  final _discountCtrl      = TextEditingController();
   bool  _isDiscountApplied = false;
-
-  bool _isPlacingOrder = false;
+  bool  _isPlacingOrder    = false;
 
   @override
   void initState() {
@@ -54,7 +50,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.dispose();
   }
 
-  // ── Load addresses ─────────────────────────────────────
   Future<void> _loadAddresses() async {
     setState(() => _isLoadingAddresses = true);
     final result = await AuthService.instance.getAddresses();
@@ -63,13 +58,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final list =
           (result.data ?? []).whereType<Map<String, dynamic>>().toList();
       setState(() {
-        _addresses       = list;
-        _selectedAddress = list.isEmpty
+        _addresses          = list;
+        _selectedAddress    = list.isEmpty
             ? null
             : list.firstWhere(
                 (a) => a['isDefault'] == true,
                 orElse: () => list.first,
               );
+        _isMapPickedAddress = false;
         _isLoadingAddresses = false;
       });
     } else {
@@ -83,7 +79,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       MaterialPageRoute(
           builder: (_) => const AddressScreen(selectionMode: true)),
     );
-    if (picked != null) setState(() => _selectedAddress = picked);
+    if (picked != null) {
+      setState(() {
+        _selectedAddress    = picked;
+        _isMapPickedAddress = false;
+      });
+    }
   }
 
   Future<void> _addNewAddress() async {
@@ -91,8 +92,72 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     if (saved != null && mounted) {
       await _loadAddresses();
       if (saved['id'] != null || saved['addressId'] != null) {
-        setState(() => _selectedAddress = saved);
+        setState(() {
+          _selectedAddress    = saved;
+          _isMapPickedAddress = false;
+        });
       }
+    }
+  }
+
+  Future<void> _pickLocationFromMap() async {
+    final picked = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => const MapLocationPickerScreen()),
+    );
+
+    if (picked == null || !mounted) return;
+    setState(() => _isLoadingAddresses = true);
+
+    final saveResult = await AuthService.instance.createAddress(
+      streetAddress: picked['streetAddress'] as String? ?? '',
+      apartment:     picked['apartment']     as String? ?? '',
+      city:          picked['city']          as String? ?? '',
+      state:         picked['state']         as String? ?? '',
+      postalCode:    picked['postalCode']    as String? ?? '',
+      country:       picked['country']       as String? ?? 'UK',
+      addressType:   picked['addressType']   as int?    ?? 2,
+      isDefault:     false,
+      label:         'Current Location',
+      latitude:      picked['latitude']      as double? ?? 0.0,
+      longitude:     picked['longitude']     as double? ?? 0.0,
+    );
+
+    if (!mounted) return;
+
+    if (saveResult.success && saveResult.data != null) {
+      setState(() {
+        _selectedAddress    = saveResult.data;
+        _isMapPickedAddress = true;
+        _isLoadingAddresses = false;
+      });
+      _loadAddresses().then((_) {
+        if (!mounted || _selectedAddress == null) return;
+        final savedId =
+            saveResult.data!['id'] ?? saveResult.data!['addressId'];
+        if (savedId == null) return;
+        final match = _addresses.firstWhere(
+          (a) => (a['id'] ?? a['addressId']).toString() == savedId.toString(),
+          orElse: () => <String, dynamic>{},
+        );
+        if (match.isNotEmpty && mounted) {
+          setState(() {
+            _selectedAddress    = match;
+            _isMapPickedAddress = true;
+          });
+        }
+      });
+    } else {
+      setState(() {
+        _selectedAddress    = picked;
+        _isMapPickedAddress = true;
+        _isLoadingAddresses = false;
+      });
+      _snack(
+        'Location selected but could not be saved. '
+        'Please add it manually if checkout fails.',
+        isError: false,
+      );
     }
   }
 
@@ -101,14 +166,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ?.toString();
 
   String _formatAddress(Map<String, dynamic> a) => [
-        if ((a['streetAddress'] ?? '').toString().isNotEmpty)
-          a['streetAddress'],
-        if ((a['apartment'] ?? '').toString().isNotEmpty) a['apartment'],
-        if ((a['city'] ?? '').toString().isNotEmpty) a['city'],
-        if ((a['postalCode'] ?? '').toString().isNotEmpty) a['postalCode'],
+        if ((a['streetAddress'] ?? '').toString().isNotEmpty) a['streetAddress'],
+        if ((a['apartment']     ?? '').toString().isNotEmpty) a['apartment'],
+        if ((a['city']          ?? '').toString().isNotEmpty) a['city'],
+        if ((a['postalCode']    ?? '').toString().isNotEmpty) a['postalCode'],
       ].join(', ');
 
   String _addressLabel(Map<String, dynamic> a) {
+    if (_isMapPickedAddress) return 'Current Location';
     final lbl = a['label']?.toString() ?? '';
     if (lbl.isNotEmpty) return lbl;
     final type = (a['addressType'] as num?)?.toInt() ?? 0;
@@ -116,6 +181,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   }
 
   IconData _addressIcon(Map<String, dynamic> a) {
+    if (_isMapPickedAddress) return Icons.location_on;
     switch ((a['addressType'] as num?)?.toInt() ?? 0) {
       case 1:  return Icons.work_outline;
       case 2:  return Icons.location_on_outlined;
@@ -123,7 +189,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
   }
 
-  // ── Deep order-id extractor ────────────────────────────
   String? _extractOrderId(Map<String, dynamic>? data) {
     if (data == null) return null;
     const keys = [
@@ -142,34 +207,25 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     if (order is Map<String, dynamic>) {
       for (final k in keys) {
         final v = order[k];
-        if (v != null && v.toString().isNotEmpty) {
-          debugPrint('✅ [orderId] order.$k: $v');
-          return v.toString();
-        }
+        if (v != null && v.toString().isNotEmpty) return v.toString();
       }
     }
     final arr = data['orders'];
-    if (arr is List &&
-        arr.isNotEmpty &&
-        arr.first is Map<String, dynamic>) {
+    if (arr is List && arr.isNotEmpty && arr.first is Map<String, dynamic>) {
       final first = arr.first as Map<String, dynamic>;
       for (final k in keys) {
         final v = first[k];
-        if (v != null && v.toString().isNotEmpty) {
-          debugPrint('✅ [orderId] orders[0].$k: $v');
-          return v.toString();
-        }
+        if (v != null && v.toString().isNotEmpty) return v.toString();
       }
     }
-    // Deep recursive
+
     String? deep(dynamic node, int depth) {
       if (depth > 5) return null;
       if (node is Map<String, dynamic>) {
         for (final k in keys) {
           final v = node[k];
-          if (v != null &&
-              v.toString().isNotEmpty &&
-              v.toString() != 'null') return v.toString();
+          if (v != null && v.toString().isNotEmpty && v.toString() != 'null')
+            return v.toString();
         }
         for (final e in node.entries) {
           final f = deep(e.value, depth + 1);
@@ -185,115 +241,58 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     }
 
     final d = deep(data, 0);
-    if (d != null) return d;
-    debugPrint('[orderId] NOT FOUND. Keys: ${data.keys.toList()}');
-    return null;
+    if (d == null) {
+      debugPrint('❌ [orderId] NOT FOUND. Keys: ${data.keys.toList()}');
+    }
+    return d;
   }
 
   // ══════════════════════════════════════════════════════
-  //  PLACE ORDER
-  //  Sends only what the API accepts:
-  //    deliveryAddressId, billingAddressId,
-  //    specialInstructions, discountCode
-  //
-  //  Cart is NOT cleared here — only cleared in
-  //  PaymentSuccessScreen after payment succeeds.
+  //  PLACE ORDER — no multi-supplier popup, calls checkout
+  //  API first to get orderId for Stripe PaymentIntent.
   // ══════════════════════════════════════════════════════
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
-      _snack('Please select a delivery address to continue.',
-          isError: true);
+      _snack('Please select a delivery address to continue.', isError: true);
       return;
     }
 
-    // Count unique suppliers in cart
-    final supplierIds = widget.cartItems
-        .map((i) => (i['supplierId'] ?? i['supplier']?['id'] ?? '').toString())
-        .where((id) => id.isNotEmpty)
-        .toSet();
+    setState(() => _isPlacingOrder = true);
 
-    if (supplierIds.length > 1) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.store, color: AppColors.primary, size: 22),
-            ),
-            const SizedBox(width: 12),
-            const Text('Multiple Suppliers'),
-          ]),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(
-              'You are ordering from ${supplierIds.length} suppliers.',
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.warning.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
-              ),
-              child: const Row(children: [
-                Icon(Icons.info_outline, color: AppColors.warning, size: 18),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Each supplier will handle their own delivery separately. You will be charged a delivery fee per supplier.',
-                    style: TextStyle(fontSize: 13, color: AppColors.textPrimary),
-                  ),
-                ),
-              ]),
-            ),
-          ]),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Go Back'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8)),
-              ),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Continue'),
-            ),
-          ],
+    final result = await AuthService.instance.checkout(
+      deliveryAddressId:   _deliveryAddressId!,
+      billingAddressId:    _deliveryAddressId!,
+      specialInstructions: _instructionsCtrl.text.trim(),
+      discountCode: _discountCtrl.text.trim().isEmpty
+          ? null
+          : _discountCtrl.text.trim(),
+    );
+
+    if (!mounted) return;
+    setState(() => _isPlacingOrder = false);
+
+    if (result.success) {
+      final data    = result.data as Map<String, dynamic>?;
+      final orderId = _extractOrderId(data);
+      debugPrint('🛒 [Checkout] orderId: "$orderId"');
+
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PaymentScreen(
+            orderId:    orderId ?? '',
+            orderTotal: widget.total,
+            orderData:  data,
+          ),
         ),
       );
-      if (confirmed != true || !mounted) return;
+    } else {
+      _snack(result.message ?? 'Checkout failed. Please try again.',
+          isError: true);
     }
-
-    // Go directly to payment screen — order placed AFTER payment
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PaymentScreen(
-          orderId:             '', // empty — order not placed yet
-          orderTotal:          widget.total,
-          orderData:           null,
-          deliveryAddressId:   _deliveryAddressId!,
-          specialInstructions: _instructionsCtrl.text.trim(),
-          discountCode: _discountCtrl.text.trim().isEmpty
-              ? null
-              : _discountCtrl.text.trim(),
-        ),
-      ),
-    );
   }
+
   void _snack(String msg, {bool isError = false}) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content:         Text(msg),
@@ -301,9 +300,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         duration:        const Duration(seconds: 4),
       ));
 
-  // ══════════════════════════════════════════════════════
-  //  BUILD
-  // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -321,36 +317,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
 
-              // ── 1. Delivery Address ───────────────────
               _Section(
                 title: 'Delivery Address',
                 icon:  Icons.location_on,
                 child: _isLoadingAddresses
                     ? const _Loading(label: 'Loading addresses...')
-                    : _selectedAddress != null
-                        ? _AddressTile(
-                            label:     _addressLabel(_selectedAddress!),
-                            address:   _formatAddress(_selectedAddress!),
-                            icon:      _addressIcon(_selectedAddress!),
-                            isDefault:
-                                _selectedAddress!['isDefault'] == true,
-                            onChange: _changeAddress,
-                          )
-                        : _NoAddress(
-                            hasAddresses: _addresses.isNotEmpty,
-                            onSelect:     _changeAddress,
-                            onAdd:        _addNewAddress,
-                          ),
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (_selectedAddress != null)
+                            _AddressTile(
+                              label:       _addressLabel(_selectedAddress!),
+                              address:     _formatAddress(_selectedAddress!),
+                              icon:        _addressIcon(_selectedAddress!),
+                              isDefault:   !_isMapPickedAddress &&
+                                           _selectedAddress!['isDefault'] == true,
+                              isMapPicked: _isMapPickedAddress,
+                              onChange:    _changeAddress,
+                            )
+                          else
+                            _NoAddress(
+                              hasAddresses: _addresses.isNotEmpty,
+                              onSelect:     _changeAddress,
+                              onAdd:        _addNewAddress,
+                            ),
+                          const SizedBox(height: 12),
+                          _UseLocationButton(onTap: _pickLocationFromMap),
+                        ],
+                      ),
               ),
               const SizedBox(height: 16),
 
-              // ── 2. Special Instructions ───────────────
               _Section(
                 title: 'Special Instructions',
                 icon:  Icons.note_alt_outlined,
                 child: TextField(
-                  controller:  _instructionsCtrl,
-                  maxLines:    3,
+                  controller:      _instructionsCtrl,
+                  maxLines:        3,
                   textInputAction: TextInputAction.done,
                   decoration: _inputDeco(
                       'Any special delivery instructions (optional)...'),
@@ -358,14 +361,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 3. Discount Code ──────────────────────
               _Section(
                 title: 'Discount Code',
                 icon:  Icons.local_offer_outlined,
                 child: Row(children: [
                   Expanded(
                     child: TextField(
-                      controller:  _discountCtrl,
+                      controller: _discountCtrl,
                       textCapitalization: TextCapitalization.characters,
                       decoration: _inputDeco('Enter promo code').copyWith(
                         suffixIcon: _isDiscountApplied
@@ -385,12 +387,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     onPressed: () {
                       final code = _discountCtrl.text.trim();
                       if (code.isEmpty) {
-                        _snack('Please enter a discount code.',
-                            isError: true);
+                        _snack('Please enter a discount code.', isError: true);
                         return;
                       }
-                      // The code is validated server-side at checkout.
-                      // We just give visual confirmation here.
                       setState(() => _isDiscountApplied = true);
                       _snack('Code "$code" will be applied at checkout.');
                     },
@@ -404,23 +403,17 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 16),
 
-              // ── 4. Order Summary ──────────────────────
               _Section(
                 title: 'Order Summary',
                 icon:  Icons.receipt,
                 child: Column(children: [
-
-                  // Item list (max 3 shown, then "+ N more")
                   ...widget.cartItems.take(3).map((item) {
                     final name  = (item['productName'] ??
-                            item['product']?['name'] ??
-                            'Product')
-                        .toString();
+                            item['product']?['name'] ?? 'Product').toString();
                     final qty   = ((item['quantity'] ?? 0) as num).toInt();
                     final price = ((item['unitPrice'] ??
                                 item['price'] ??
-                                item['product']?['price'] ??
-                                0) as num)
+                                item['product']?['price'] ?? 0) as num)
                         .toDouble();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -428,47 +421,37 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Expanded(
-                            child: Text(
-                              '$name × $qty',
+                            child: Text('$name × $qty',
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    color: AppColors.textPrimary),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                          Text('£${(price * qty).toStringAsFixed(2)}',
                               style: const TextStyle(
-                                  fontSize: 14,
-                                  color: AppColors.textPrimary),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          Text(
-                            '£${(price * qty).toStringAsFixed(2)}',
-                            style: const TextStyle(
-                                fontSize:   14,
-                                fontWeight: FontWeight.w600,
-                                color:      AppColors.textPrimary),
-                          ),
+                                  fontSize:   14,
+                                  fontWeight: FontWeight.w600,
+                                  color:      AppColors.textPrimary)),
                         ],
                       ),
                     );
                   }),
-
                   if (widget.cartItems.length > 3)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Text(
                         '+ ${widget.cartItems.length - 3} more items',
                         style: const TextStyle(
-                            fontSize: 13,
-                            color:    AppColors.textSecondary),
+                            fontSize: 13, color: AppColors.textSecondary),
                       ),
                     ),
-
                   const Divider(height: 24),
-
-                  // Price breakdown
                   _SummRow('Subtotal',
                       '£${widget.subtotal.toStringAsFixed(2)}'),
                   const SizedBox(height: 8),
                   _SummRow('Delivery Fee',
                       '£${widget.deliveryFee.toStringAsFixed(2)}'),
-
                   if (_isDiscountApplied &&
                       _discountCtrl.text.trim().isNotEmpty) ...[
                     const SizedBox(height: 8),
@@ -479,12 +462,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                           const Icon(Icons.local_offer,
                               size: 14, color: AppColors.success),
                           const SizedBox(width: 4),
-                          Text(
-                            'Code: ${_discountCtrl.text.trim()}',
-                            style: const TextStyle(
-                                fontSize: 13,
-                                color: AppColors.success),
-                          ),
+                          Text('Code: ${_discountCtrl.text.trim()}',
+                              style: const TextStyle(
+                                  fontSize: 13, color: AppColors.success)),
                         ]),
                         const Text('Applied ✓',
                             style: TextStyle(
@@ -494,18 +474,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                       ],
                     ),
                   ],
-
                   const Divider(height: 24),
-                  _SummRow(
-                    'Total',
-                    '£${widget.total.toStringAsFixed(2)}',
-                    bold: true,
-                  ),
+                  _SummRow('Total', '£${widget.total.toStringAsFixed(2)}',
+                      bold: true),
                 ]),
               ),
               const SizedBox(height: 24),
 
-              // ── Proceed to Payment button ─────────────
               SizedBox(
                 height: 56,
                 child: ElevatedButton(
@@ -523,14 +498,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                             SizedBox(
                               width: 20, height: 20,
                               child: CircularProgressIndicator(
-                                  color: AppColors.white,
-                                  strokeWidth: 2),
+                                  color: AppColors.white, strokeWidth: 2),
                             ),
                             SizedBox(width: 12),
                             Text('Processing...',
                                 style: TextStyle(
-                                    fontSize:   16,
-                                    fontWeight: FontWeight.bold)),
+                                    fontSize: 16, fontWeight: FontWeight.bold)),
                           ],
                         )
                       : Row(
@@ -557,8 +530,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   SizedBox(width: 4),
                   Text('Secured by Stripe',
                       style: TextStyle(
-                          fontSize: 12,
-                          color:    AppColors.textSecondary)),
+                          fontSize: 12, color: AppColors.textSecondary)),
                 ]),
               ),
               const SizedBox(height: 32),
@@ -572,8 +544,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   InputDecoration _inputDeco(String hint) => InputDecoration(
         hintText:  hint,
         hintStyle: const TextStyle(color: AppColors.textHint),
-        filled:     true,
-        fillColor:  AppColors.background,
+        filled:    true,
+        fillColor: AppColors.background,
         contentPadding: const EdgeInsets.all(12),
         border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
@@ -583,23 +555,64 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             borderSide: const BorderSide(color: AppColors.border)),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(
-                color: AppColors.primary, width: 1.5)),
+            borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+      );
+}
+
+// ══════════════════════════════════════════════════════════
+//  Use Current Location button
+// ══════════════════════════════════════════════════════════
+class _UseLocationButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _UseLocationButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color:        AppColors.primary.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(12),
+            border:       Border.all(
+                color: AppColors.primary.withOpacity(0.35), width: 1.2),
+          ),
+          child: Row(children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color:        AppColors.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.my_location, color: AppColors.primary, size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text('Use Current Location',
+                    style: TextStyle(
+                        fontSize:   14,
+                        fontWeight: FontWeight.w700,
+                        color:      AppColors.primary)),
+                Text('Pick on map & auto-fill address',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color:    AppColors.primary.withOpacity(0.7))),
+              ]),
+            ),
+            Icon(Icons.chevron_right, color: AppColors.primary, size: 20),
+          ]),
+        ),
       );
 }
 
 // ══════════════════════════════════════════════════════════
 //  REUSABLE WIDGETS
 // ══════════════════════════════════════════════════════════
-
 class _Section extends StatelessWidget {
-  final String   title;
-  final IconData icon;
-  final Widget   child;
-  const _Section(
-      {required this.title,
-      required this.icon,
-      required this.child});
+  final String title; final IconData icon; final Widget child;
+  const _Section({required this.title, required this.icon, required this.child});
 
   @override
   Widget build(BuildContext context) => Container(
@@ -608,34 +621,31 @@ class _Section extends StatelessWidget {
             color:        AppColors.surface,
             borderRadius: BorderRadius.circular(16),
             border:       Border.all(color: AppColors.border)),
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Icon(icon, size: 20, color: AppColors.primary),
             const SizedBox(width: 8),
-            Text(title,
-                style: const TextStyle(
-                    fontSize:   16,
-                    fontWeight: FontWeight.bold,
-                    color:      AppColors.textPrimary)),
+            Text(title, style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary)),
           ]),
           const SizedBox(height: 16),
           child,
-        ]),
-      );
+        ]));
 }
 
 class _AddressTile extends StatelessWidget {
   final String   label, address;
   final IconData icon;
-  final bool     isDefault;
+  final bool     isDefault, isMapPicked;
   final VoidCallback onChange;
+
   const _AddressTile({
     required this.label,
     required this.address,
     required this.icon,
     required this.isDefault,
+    required this.isMapPicked,
     required this.onChange,
   });
 
@@ -645,52 +655,63 @@ class _AddressTile extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
+              color: isMapPicked
+                  ? Colors.blue.withOpacity(0.1)
+                  : AppColors.primary.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10)),
-          child: Icon(icon, color: AppColors.primary, size: 22),
+          child: Icon(icon,
+              color: isMapPicked ? Colors.blue : AppColors.primary, size: 22),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+          Wrap(spacing: 6, runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-            Row(children: [
-              Text(label,
-                  style: const TextStyle(
-                      fontSize:   15,
-                      fontWeight: FontWeight.bold,
-                      color:      AppColors.textPrimary)),
-              if (isDefault) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                      color: AppColors.success.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(4)),
-                  child: const Text('Default',
-                      style: TextStyle(
-                          fontSize:   10,
-                          fontWeight: FontWeight.w600,
-                          color:      AppColors.success)),
-                ),
-              ],
-            ]),
-            const SizedBox(height: 4),
-            Text(address,
-                style: const TextStyle(
-                    fontSize: 13,
-                    color:    AppColors.textSecondary)),
+            Text(label, style: const TextStyle(
+                fontSize: 15, fontWeight: FontWeight.bold,
+                color: AppColors.textPrimary)),
+            if (isMapPicked)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4)),
+                child: const Text('📍 Map Pick', style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.w600,
+                    color: Colors.blue)),
+              )
+            else if (isDefault)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4)),
+                child: const Text('Default', style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.w600,
+                    color: AppColors.success)),
+              ),
           ]),
-        ),
+          const SizedBox(height: 4),
+          Text(address, style: const TextStyle(
+              fontSize: 13, color: AppColors.textSecondary)),
+        ])),
         TextButton(
-            onPressed: onChange, child: const Text('Change')),
+          onPressed: onChange,
+          style: TextButton.styleFrom(
+            padding:       const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize:   const Size(0, 0),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: const Text('Change'),
+        ),
       ]);
 }
 
 class _NoAddress extends StatelessWidget {
   final bool         hasAddresses;
   final VoidCallback onSelect, onAdd;
+
   const _NoAddress({
     required this.hasAddresses,
     required this.onSelect,
@@ -705,18 +726,12 @@ class _NoAddress extends StatelessWidget {
           decoration: BoxDecoration(
               color: AppColors.warning.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: AppColors.warning.withOpacity(0.3))),
+              border: Border.all(color: AppColors.warning.withOpacity(0.3))),
           child: Row(children: [
-            Icon(Icons.warning_amber_rounded,
-                color: AppColors.warning, size: 20),
+            Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 20),
             const SizedBox(width: 8),
-            const Expanded(
-              child: Text('No delivery address selected.',
-                  style: TextStyle(
-                      fontSize: 13,
-                      color:    AppColors.textPrimary)),
-            ),
+            const Expanded(child: Text('No delivery address selected.',
+                style: TextStyle(fontSize: 13, color: AppColors.textPrimary))),
           ]),
         ),
         const SizedBox(height: 12),
@@ -739,16 +754,12 @@ class _Loading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(children: [
-        const SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2)),
-        const SizedBox(width: 12),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 14,
-                color:    AppColors.textSecondary)),
-      ]);
+    const SizedBox(width: 20, height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2)),
+    const SizedBox(width: 12),
+    Text(label, style: const TextStyle(
+        fontSize: 14, color: AppColors.textSecondary)),
+  ]);
 }
 
 class _SummRow extends StatelessWidget {
@@ -759,17 +770,13 @@ class _SummRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(title,
-            style: TextStyle(
-                fontSize:   bold ? 16 : 14,
-                fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-                color:      AppColors.textPrimary)),
-        Text(value,
-            style: TextStyle(
-                fontSize:   bold ? 18 : 15,
-                fontWeight: bold ? FontWeight.bold : FontWeight.w600,
-                color: bold
-                    ? AppColors.primary
-                    : AppColors.textPrimary)),
+        Text(title, style: TextStyle(
+            fontSize:   bold ? 16 : 14,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            color:      AppColors.textPrimary)),
+        Text(value, style: TextStyle(
+            fontSize:   bold ? 18 : 15,
+            fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+            color:      bold ? AppColors.primary : AppColors.textPrimary)),
       ]);
 }
