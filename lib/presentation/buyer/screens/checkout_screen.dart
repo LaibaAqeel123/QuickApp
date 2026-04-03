@@ -32,6 +32,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   bool                       _isLoadingAddresses = true;
   bool                       _isMapPickedAddress = false;
 
+  List<Map<String, dynamic>> _supplierFees      = [];
+  double                     _actualDeliveryFee = 0.0;
+  bool                       _isCalculatingFee  = false;
+
   final _instructionsCtrl  = TextEditingController();
   final _discountCtrl      = TextEditingController();
   bool  _isDiscountApplied = false;
@@ -68,8 +72,37 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         _isMapPickedAddress = false;
         _isLoadingAddresses = false;
       });
+      await _calculateFee();
     } else {
       setState(() => _isLoadingAddresses = false);
+    }
+  }
+
+  Future<void> _calculateFee() async {
+    if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) return;
+
+    setState(() => _isCalculatingFee = true);
+
+    try {
+      final result = await AuthService.instance.calculateDeliveryFee(
+        deliveryAddressId: _deliveryAddressId!,
+      );
+
+      if (result.success && result.data != null && mounted) {
+        final data      = result.data as Map<String, dynamic>;
+        final suppliers = (data['suppliers'] as List? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final total = (data['totalDeliveryFee'] as num?)?.toDouble() ?? 0.0;
+
+        setState(() {
+          _supplierFees      = suppliers;
+          _actualDeliveryFee = total;
+        });
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _isCalculatingFee = false);
     }
   }
 
@@ -84,6 +117,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         _selectedAddress    = picked;
         _isMapPickedAddress = false;
       });
+      await _calculateFee();
     }
   }
 
@@ -145,6 +179,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             _selectedAddress    = match;
             _isMapPickedAddress = true;
           });
+          _calculateFee();
         }
       });
     } else {
@@ -247,50 +282,28 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     return d;
   }
 
-  // ══════════════════════════════════════════════════════
-  //  PLACE ORDER — no multi-supplier popup, calls checkout
-  //  API first to get orderId for Stripe PaymentIntent.
-  // ══════════════════════════════════════════════════════
   Future<void> _placeOrder() async {
     if (_deliveryAddressId == null || _deliveryAddressId!.isEmpty) {
       _snack('Please select a delivery address to continue.', isError: true);
       return;
     }
 
-    setState(() => _isPlacingOrder = true);
-
-    final result = await AuthService.instance.checkout(
-      deliveryAddressId:   _deliveryAddressId!,
-      billingAddressId:    _deliveryAddressId!,
-      specialInstructions: _instructionsCtrl.text.trim(),
-      discountCode: _discountCtrl.text.trim().isEmpty
-          ? null
-          : _discountCtrl.text.trim(),
-    );
-
     if (!mounted) return;
-    setState(() => _isPlacingOrder = false);
-
-    if (result.success) {
-      final data    = result.data as Map<String, dynamic>?;
-      final orderId = _extractOrderId(data);
-      debugPrint('🛒 [Checkout] orderId: "$orderId"');
-
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PaymentScreen(
-            orderId:    orderId ?? '',
-            orderTotal: widget.total,
-            orderData:  data,
-          ),
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaymentScreen(
+          orderId:             '',
+          orderTotal:          widget.subtotal + _actualDeliveryFee,
+          orderData:           null,
+          deliveryAddressId:   _deliveryAddressId!,
+          specialInstructions: _instructionsCtrl.text.trim(),
+          discountCode: _discountCtrl.text.trim().isEmpty
+              ? null
+              : _discountCtrl.text.trim(),
         ),
-      );
-    } else {
-      _snack(result.message ?? 'Checkout failed. Please try again.',
-          isError: true);
-    }
+      ),
+    );
   }
 
   void _snack(String msg, {bool isError = false}) =>
@@ -331,7 +344,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                               address:     _formatAddress(_selectedAddress!),
                               icon:        _addressIcon(_selectedAddress!),
                               isDefault:   !_isMapPickedAddress &&
-                                           _selectedAddress!['isDefault'] == true,
+                                  _selectedAddress!['isDefault'] == true,
                               isMapPicked: _isMapPickedAddress,
                               onChange:    _changeAddress,
                             )
@@ -409,12 +422,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 child: Column(children: [
                   ...widget.cartItems.take(3).map((item) {
                     final name  = (item['productName'] ??
-                            item['product']?['name'] ?? 'Product').toString();
+                        item['product']?['name'] ?? 'Product').toString();
                     final qty   = ((item['quantity'] ?? 0) as num).toInt();
                     final price = ((item['unitPrice'] ??
                                 item['price'] ??
                                 item['product']?['price'] ?? 0) as num)
-                        .toDouble();
+                            .toDouble();
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Row(
@@ -450,8 +463,70 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                   _SummRow('Subtotal',
                       '£${widget.subtotal.toStringAsFixed(2)}'),
                   const SizedBox(height: 8),
-                  _SummRow('Delivery Fee',
-                      '£${widget.deliveryFee.toStringAsFixed(2)}'),
+
+                  if (_isCalculatingFee)
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Delivery Fee',
+                            style: TextStyle(
+                                fontSize: 14,
+                                color: AppColors.textSecondary)),
+                        SizedBox(
+                          width: 16, height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ],
+                    )
+                  else if (_supplierFees.length > 1)
+                    Column(
+                      children: [
+                        ..._supplierFees.map((s) {
+                          final name = s['supplierName']?.toString() ?? 'Store';
+                          final fee  = (s['deliveryFee'] as num?)?.toDouble() ?? 0.0;
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text('$name delivery',
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          color: AppColors.textSecondary),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                                ),
+                                Text('£${fee.toStringAsFixed(2)}',
+                                    style: const TextStyle(
+                                        fontSize:   13,
+                                        fontWeight: FontWeight.w600,
+                                        color:      AppColors.textPrimary)),
+                              ],
+                            ),
+                          );
+                        }),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Total Delivery',
+                                style: TextStyle(
+                                    fontSize:   14,
+                                    fontWeight: FontWeight.w600,
+                                    color:      AppColors.textSecondary)),
+                            Text('£${_actualDeliveryFee.toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                    fontSize:   14,
+                                    fontWeight: FontWeight.w600,
+                                    color:      AppColors.textPrimary)),
+                          ],
+                        ),
+                      ],
+                    )
+                  else
+                    _SummRow('Delivery Fee',
+                        '£${_actualDeliveryFee.toStringAsFixed(2)}'),
+
                   if (_isDiscountApplied &&
                       _discountCtrl.text.trim().isNotEmpty) ...[
                     const SizedBox(height: 8),
@@ -475,8 +550,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                     ),
                   ],
                   const Divider(height: 24),
-                  _SummRow('Total', '£${widget.total.toStringAsFixed(2)}',
-                      bold: true),
+                  _SummRow(
+                    'Total',
+                    '£${(widget.subtotal + _actualDeliveryFee).toStringAsFixed(2)}',
+                    bold: true,
+                  ),
                 ]),
               ),
               const SizedBox(height: 24),
@@ -513,7 +591,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                             const SizedBox(width: 10),
                             Text(
                               'Proceed to Payment  •  '
-                              '£${widget.total.toStringAsFixed(2)}',
+                              '£${(widget.subtotal + _actualDeliveryFee).toStringAsFixed(2)}',
                               style: const TextStyle(
                                   fontSize:   16,
                                   fontWeight: FontWeight.bold),
@@ -555,11 +633,14 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             borderSide: const BorderSide(color: AppColors.border)),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: AppColors.primary, width: 1.5)),
+            borderSide:
+                const BorderSide(color: AppColors.primary, width: 1.5)),
       );
 }
 
-
+// ══════════════════════════════════════════════════════════
+//  USE LOCATION BUTTON  ← incoming (main) accepted — cleaner
+// ══════════════════════════════════════════════════════════
 class _UseLocationButton extends StatelessWidget {
   final VoidCallback onTap;
   const _UseLocationButton({required this.onTap});
@@ -586,18 +667,20 @@ class _UseLocationButton extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text('Pin on Map',
-                    style: TextStyle(
-                        fontSize:   14,
-                        fontWeight: FontWeight.w700,
-                        color:      AppColors.primary)),
-                Text('Pick on map & auto-fill address',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color:    AppColors.primary.withOpacity(0.7))),
-              ]),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Use Current Location',
+                      style: TextStyle(
+                          fontSize:   14,
+                          fontWeight: FontWeight.w700,
+                          color:      AppColors.primary)),
+                  Text('Pick on map & auto-fill address',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color:    AppColors.primary.withOpacity(0.7))),
+                ],
+              ),
             ),
             Icon(Icons.chevron_right, color: AppColors.primary, size: 20),
           ]),
@@ -614,22 +697,22 @@ class _Section extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-            color:        AppColors.surface,
-            borderRadius: BorderRadius.circular(16),
-            border:       Border.all(color: AppColors.border)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Icon(icon, size: 20, color: AppColors.primary),
-            const SizedBox(width: 8),
-            Text(title, style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary)),
-          ]),
-          const SizedBox(height: 16),
-          child,
-        ]));
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color:        AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border:       Border.all(color: AppColors.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, size: 20, color: AppColors.primary),
+          const SizedBox(width: 8),
+          Text(title, style: const TextStyle(
+              fontSize: 16, fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary)),
+        ]),
+        const SizedBox(height: 16),
+        child,
+      ]));
 }
 
 class _AddressTile extends StatelessWidget {
@@ -661,39 +744,43 @@ class _AddressTile extends StatelessWidget {
               color: isMapPicked ? Colors.blue : AppColors.primary, size: 22),
         ),
         const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-          Wrap(spacing: 6, runSpacing: 4,
-              crossAxisAlignment: WrapCrossAlignment.center,
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-            Text(label, style: const TextStyle(
-                fontSize: 15, fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary)),
-            if (isMapPicked)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(4)),
-                child: const Text('📍 Map Pick', style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.w600,
-                    color: Colors.blue)),
-              )
-            else if (isDefault)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(4)),
-                child: const Text('Default', style: TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.w600,
-                    color: AppColors.success)),
-              ),
+            Wrap(spacing: 6, runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(label, style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary)),
+                  if (isMapPicked)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: Colors.blue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4)),
+                      child: const Text('📍 Map Pick', style: TextStyle(
+                          fontSize: 10, fontWeight: FontWeight.w600,
+                          color: Colors.blue)),
+                    )
+                  else if (isDefault)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: AppColors.success.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4)),
+                      child: const Text('Default', style: TextStyle(
+                          fontSize: 10, fontWeight: FontWeight.w600,
+                          color: AppColors.success)),
+                    ),
+                ]),
+            const SizedBox(height: 4),
+            Text(address, style: const TextStyle(
+                fontSize: 13, color: AppColors.textSecondary)),
           ]),
-          const SizedBox(height: 4),
-          Text(address, style: const TextStyle(
-              fontSize: 13, color: AppColors.textSecondary)),
-        ])),
+        ),
         TextButton(
           onPressed: onChange,
           style: TextButton.styleFrom(
@@ -724,12 +811,17 @@ class _NoAddress extends StatelessWidget {
           decoration: BoxDecoration(
               color: AppColors.warning.withOpacity(0.1),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.warning.withOpacity(0.3))),
+              border:
+                  Border.all(color: AppColors.warning.withOpacity(0.3))),
           child: Row(children: [
-            Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 20),
+            Icon(Icons.warning_amber_rounded,
+                color: AppColors.warning, size: 20),
             const SizedBox(width: 8),
-            const Expanded(child: Text('No delivery address selected.',
-                style: TextStyle(fontSize: 13, color: AppColors.textPrimary))),
+            const Expanded(
+                child: Text('No delivery address selected.',
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textPrimary))),
           ]),
         ),
         const SizedBox(height: 12),
@@ -752,12 +844,13 @@ class _Loading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(children: [
-    const SizedBox(width: 20, height: 20,
-        child: CircularProgressIndicator(strokeWidth: 2)),
-    const SizedBox(width: 12),
-    Text(label, style: const TextStyle(
-        fontSize: 14, color: AppColors.textSecondary)),
-  ]);
+        const SizedBox(
+            width: 20, height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2)),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(
+            fontSize: 14, color: AppColors.textSecondary)),
+      ]);
 }
 
 class _SummRow extends StatelessWidget {
