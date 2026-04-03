@@ -1863,7 +1863,8 @@ class AuthService {
   }
 
   Future<ApiResult<Map<String, dynamic>>> payWithSavedCard({
-    required String orderId,
+    String? orderId,
+    String? groupOrderId,
     required String cardId,
   }) async {
     try {
@@ -1872,7 +1873,12 @@ class AuthService {
       final response = await http
           .post(Uri.parse(ApiConstants.paymentPayWithSavedCard),
           headers: await _authHeaders,
-          body: jsonEncode({'orderId': orderId, 'cardId': cardId}))
+          body: jsonEncode({
+            if (orderId != null && orderId.isNotEmpty) 'orderId': orderId,
+            if (groupOrderId != null && groupOrderId.isNotEmpty)
+              'groupOrderId': groupOrderId,
+            'cardId': cardId,
+          }))
           .timeout(const Duration(seconds: 30));
       _log('PAY WITH SAVED CARD RESPONSE', ApiConstants.paymentPayWithSavedCard,
           status: response.statusCode, body: response.body);
