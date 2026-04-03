@@ -205,9 +205,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                             fontWeight: FontWeight.bold, color: AppColors.white),
                       ),
                     ]),
-                    IconButton(
-                        icon: const Icon(Icons.notifications_outlined),
-                        color: AppColors.white, onPressed: () {}),
+                 
                   ]),
                   const SizedBox(height: 20),
                   GestureDetector(

@@ -235,37 +235,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
               activeColor: AppColors.primary,
               onChanged: (v) => setM(() { tempMin = v.start; tempMax = v.end; }),
             ),
-            const SizedBox(height: 20),
-
-            const Text('Minimum Rating', style: TextStyle(fontSize: 13,
-                fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
-            const SizedBox(height: 8),
-            Row(children: [null, 3.0, 3.5, 4.0, 4.5].map((r) {
-              final sel = tempRating == r;
-              return Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: GestureDetector(
-                  onTap: () => setM(() => tempRating = r),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: sel ? AppColors.primary : AppColors.surfaceLight,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: sel ? AppColors.primary : AppColors.border),
-                    ),
-                    child: Text(r == null ? 'Any' : '${r}★+',
-                        style: TextStyle(fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: sel
-                                ? AppColors.white : AppColors.textPrimary)),
-                  ),
-                ),
-              );
-            }).toList()),
-            const SizedBox(height: 28),
-
+            
             SizedBox(height: 52, child: ElevatedButton(
               onPressed: () {
                 String catName = '';
