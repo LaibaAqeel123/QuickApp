@@ -136,10 +136,6 @@ class _BuyerProfileScreenState extends State<BuyerProfileScreen> {
 
           // ── Account ──────────────────────────────────
           _SectionCard(label: 'Account', children: [
-            _MenuItem(
-                icon: Icons.person_outlined, title: 'Personal Information',
-                subtitle: 'Update your name, email, phone', onTap: () {}),
-            const Divider(height: 1),
 
             // ── Addresses → AddressScreen ───────────────
             _MenuItem(
@@ -165,7 +161,6 @@ class _BuyerProfileScreenState extends State<BuyerProfileScreen> {
                   context,
                   MaterialPageRoute(builder: (_) => const AddressScreen()),
                 );
-                // Refresh badge when returning
                 _loadAddressCount();
               },
             ),
@@ -201,12 +196,8 @@ class _BuyerProfileScreenState extends State<BuyerProfileScreen> {
           ]),
           const SizedBox(height: 16),
 
-          // ── Orders & Disputes ─────────────────────────
-          _SectionCard(label: 'Orders & Support', children: [
-            _MenuItem(
-                icon: Icons.receipt_long_outlined, title: 'Order History',
-                subtitle: 'View all your past orders', onTap: () {}),
-            const Divider(height: 1),
+          // ── Disputes ─────────────────────────────────
+          _SectionCard(label: 'Support', children: [
             _MenuItem(
               icon:      Icons.gavel_outlined,
               title:     'My Disputes',
@@ -215,22 +206,6 @@ class _BuyerProfileScreenState extends State<BuyerProfileScreen> {
               onTap: () => Navigator.push(
                   context, MaterialPageRoute(builder: (_) => const MyDisputesScreen())),
             ),
-            const Divider(height: 1),
-            _MenuItem(
-                icon: Icons.help_outlined, title: 'Help & Support',
-                subtitle: 'FAQs and contact support', onTap: () {}),
-          ]),
-          const SizedBox(height: 16),
-
-          // ── Settings ─────────────────────────────────
-          _SectionCard(label: 'Settings', children: [
-            _MenuItem(
-                icon: Icons.notifications_outlined, title: 'Notifications',
-                subtitle: 'Manage notification preferences', onTap: () {}),
-            const Divider(height: 1),
-            _MenuItem(icon: Icons.language, title: 'Language', subtitle: 'English (UK)', onTap: () {}),
-            const Divider(height: 1),
-            _MenuItem(icon: Icons.info_outlined, title: 'About', subtitle: 'App version 1.0.0', onTap: () {}),
           ]),
           const SizedBox(height: 24),
 

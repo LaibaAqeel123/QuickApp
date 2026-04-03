@@ -81,9 +81,9 @@ class CartScreenState extends State<CartScreen>
   double get _subtotal =>
       _cartItems.fold(0, (s, i) => s + (_itemPrice(i) * _itemQty(i)));
 
-  /// Base delivery fee from API meta, or default £8.50
+  /// Base delivery fee from API meta, or default £0.00
   double get _baseDeliveryFee =>
-      (_cartMeta?['deliveryFee'] as num?)?.toDouble() ?? 8.50;
+      (_cartMeta?['deliveryFee'] as num?)?.toDouble() ?? 0.00;
 
   /// Number of distinct suppliers in the cart
   int get _storeCount => _grouped.keys.length;
@@ -575,8 +575,15 @@ class _OrderSummaryBar extends StatelessWidget {
           const SizedBox(height: 8),
           // Always show just the base delivery fee in the cart.
           // No store-count multiplier here — that appears in the popup.
-          _SummaryRow('Delivery Fee',
-              '£${displayDeliveryFee.toStringAsFixed(2)}'),
+          if (storeCount > 1)
+  _SummaryRow(
+    'Delivery Fee',
+    '£${displayDeliveryFee.toStringAsFixed(2)} × $storeCount stores',
+    valueColor: Colors.orange,
+  )
+else
+  _SummaryRow('Delivery Fee',
+      '£${displayDeliveryFee.toStringAsFixed(2)}'),
           const Divider(height: 24),
           _SummaryRow('Total',
               '£${displayTotal.toStringAsFixed(2)}',

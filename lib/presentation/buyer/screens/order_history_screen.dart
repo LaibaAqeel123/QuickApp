@@ -5,7 +5,7 @@ import 'package:food_delivery_app/presentation/buyer/screens/order_tracking_scre
 import 'package:food_delivery_app/presentation/buyer/screens/dispute_form_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/grouped_order_tracking_screen.dart';
 
-// ── INCOMING: granular status codes matching real API ────
+// ── Granular status codes matching real API ────
 const int _kStatusConfirmed      = 2;
 const int _kStatusAccepted       = 3;
 const int _kStatusSentToDriver   = 4;
@@ -21,7 +21,7 @@ const int _kPayCancelled = 4;
 const int _kPayRefunded  = 5;
 
 // ══════════════════════════════════════════════════════════
-//  FILTER MODEL  (CURRENT — kept in full)
+//  FILTER MODEL
 // ══════════════════════════════════════════════════════════
 class _OrderFilter {
   Set<String> orderStatuses;
@@ -75,7 +75,7 @@ class _OrderFilter {
 }
 
 // ══════════════════════════════════════════════════════════
-//  ORDER GROUP MODEL  (INCOMING — multi-supplier grouping)
+//  ORDER GROUP MODEL
 // ══════════════════════════════════════════════════════════
 class _OrderGroup {
   final String                     groupId;
@@ -102,15 +102,7 @@ class _OrderGroup {
 }
 
 // ══════════════════════════════════════════════════════════
-//  DELIVERY STATUS TRANSLATOR  (CURRENT — keeps translation at fetch time)
-//
-//  Maps raw backend delivery-status strings → customer-facing labels.
-//  Returns null for terminal/unknown states so the order's own
-//  status field shows through.
-//
-//  With the corrected int constants (INCOMING), OutForDelivery is
-//  now int 8, so the backend no longer "sets it too early".
-//  The delivery record is still the authoritative granular source.
+//  DELIVERY STATUS TRANSLATOR
 // ══════════════════════════════════════════════════════════
 String? _deliveryStatusToLabel(String raw) {
   final s = raw.toLowerCase().replaceAll(RegExp(r'[\s_\-]'), '');
@@ -138,11 +130,12 @@ String? _deliveryStatusToLabel(String raw) {
     case 'done':
       return 'Delivered';
 
-    case 'cancelled':
-    case 'canceled':
     case 'failed':
     case 'rejected':
-      return null;   // terminal — let order status speak
+      return 'Cancelled';
+    case 'cancelled':
+    case 'canceled':
+      return null;
 
     default:
       return null;
@@ -160,7 +153,7 @@ class OrderHistoryScreen extends StatefulWidget {
 }
 
 class _OrderHistoryScreenState extends State<OrderHistoryScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _tabController;
 
   List<Map<String, dynamic>> _rawOrders     = [];
@@ -169,34 +162,47 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool    _isLoading = true;
   String? _error;
 
-  // CURRENT: stores translated customer-facing label (not raw string)
   final Map<String, String> _deliveryStatusCache = {};
   final Map<String, int>    _paymentStatusCache  = {};
 
-  // CURRENT: filter state
+  // ── FIX: Track enrichment state per-order.
+  // We use a simpler approach: always re-check orders whose
+  // payment status is pending or unknown on every load/resume.
+  // Only skip re-fetching if status is a known terminal state
+  // AND we've confirmed it this session.
+  final Set<String> _terminalPaymentIds = {};
+  bool _enrichmentInProgress = false;
+
   _OrderFilter _filter = _OrderFilter();
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    WidgetsBinding.instance.addObserver(this);
     _loadOrders();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _rawOrders.isNotEmpty) {
+      _reEnrichPaymentStatuses();
+    }
   }
 
   // ── Status helpers ──────────────────────────────────
   String _statusLabel(Map<String, dynamic> o) {
     final oid    = _orderId(o);
-    // CURRENT: cache stores translated label directly
     final cached = _deliveryStatusCache[oid];
     if (cached != null && cached.isNotEmpty) return cached;
 
-    // INCOMING: correct int constants — no longer need OutForDelivery workaround
     final raw = o['status'] ?? o['orderStatus'];
     if (raw is int) {
       switch (raw) {
@@ -235,7 +241,29 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   bool _isCompleted(Map<String, dynamic> o) =>
       _statusLabel(o).toLowerCase() == 'delivered';
 
-  int? _paymentStatus(String orderId) => _paymentStatusCache[orderId];
+  // ── FIX: For a group, return the best payment status across
+  // all orders in the group. If ANY order is paid, show paid.
+  int? _groupPaymentStatus(_OrderGroup group) {
+    int? best;
+    for (final o in group.orders) {
+      final oid = _orderId(o);
+      final ps  = _paymentStatusCache[oid];
+      if (ps == null) continue;
+      // Priority: Completed > Refunded > Failed > Cancelled > Pending
+      if (ps == _kPayCompleted) return _kPayCompleted;
+      if (best == null) {
+        best = ps;
+      } else if (ps == _kPayRefunded && best != _kPayCompleted) {
+        best = ps;
+      }
+    }
+    // Also check by groupOrderId directly if backend returns group-level payment
+    final groupId = group.groupId;
+    final groupPs = _paymentStatusCache[groupId];
+    if (groupPs == _kPayCompleted) return _kPayCompleted;
+    if (groupPs != null && best == null) best = groupPs;
+    return best;
+  }
 
   // ── Field helpers ───────────────────────────────────
   String _orderId(Map<String, dynamic> o) =>
@@ -286,7 +314,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     return DateTime.tryParse(raw.toString());
   }
 
-  // ── INCOMING: group orders by groupOrderId ──────────
+  // ── Group orders by groupOrderId ──────────
   List<_OrderGroup> _groupOrders(List<Map<String, dynamic>> orders) {
     final groups = <String, List<Map<String, dynamic>>>{};
     for (final o in orders) {
@@ -301,7 +329,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     )).toList();
   }
 
-  // ── CURRENT: filter + sort ──────────────────────────
+  // ── Filter + sort ──────────────────────────
   List<Map<String, dynamic>> _applyFilter(List<Map<String, dynamic>> list) {
     final result = list.where((o) {
       final oid = _orderId(o);
@@ -336,11 +364,9 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     return result;
   }
 
-  // Apply filter then group — BOTH combined
   List<_OrderGroup> _applyFilterAndGroup(List<Map<String, dynamic>> list) {
     final filtered = _applyFilter(list);
     final groups   = _groupOrders(filtered);
-    // Preserve sort order: sort groups by their primary order's date
     groups.sort((a, b) {
       final da = _orderDateTime(a.primaryOrder) ?? DateTime(2000);
       final db = _orderDateTime(b.primaryOrder) ?? DateTime(2000);
@@ -353,10 +379,15 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   Future<void> _loadOrders() async {
     if (!mounted) return;
     setState(() { _isLoading = true; _error = null; });
+
     _deliveryStatusCache.clear();
+
+    // ── FIX: On full reload, clear terminal set so we re-verify
+    // all payment statuses fresh. This ensures a paid order that
+    // was previously "pending" gets picked up correctly.
+    _terminalPaymentIds.clear();
     _paymentStatusCache.clear();
 
-    // INCOMING: fetch all granular status buckets
     final futures = await Future.wait([
       AuthService.instance.getMyOrders(status: _kStatusConfirmed,      pageSize: 50),
       AuthService.instance.getMyOrders(status: _kStatusAccepted,       pageSize: 50),
@@ -393,14 +424,36 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
       _error         = dedup.isEmpty ? err : null;
     });
 
-    // Enrich both delivery and payment in parallel
     await Future.wait([
       _enrichDeliveryStatuses(dedup),
-      _enrichPaymentStatuses(dedup),
+      _enrichAllPaymentStatuses(dedup),
     ]);
   }
 
-  // ── Delivery enrichment (CURRENT approach: translate at fetch time) ──
+  // ── FIX: Re-enrich on resume — always re-check non-terminal orders
+  Future<void> _reEnrichPaymentStatuses() async {
+    if (_enrichmentInProgress || _rawOrders.isEmpty) return;
+
+    final toReFetch = _rawOrders.where((o) {
+  final oid = _orderId(o);
+  if (oid.isEmpty) return false;
+  if (_terminalPaymentIds.contains(oid)) return false;
+  final raw = o['status'] ?? o['orderStatus'];
+  if (raw == _kStatusCancelled) return false;
+  if (raw is String) {
+    final n = raw.toLowerCase().replaceAll(RegExp(r'[\s_]'), '');
+    if (n == 'cancelled' || n == 'canceled') return false;
+  }
+  return true;
+}).toList();
+
+    if (toReFetch.isEmpty) return;
+
+    debugPrint('🔄 [PaymentEnrich] Re-enriching ${toReFetch.length} orders on resume');
+    await _enrichPaymentStatusesBatch(toReFetch);
+  }
+
+  // ── Delivery enrichment ──
   Future<void> _enrichDeliveryStatuses(List<Map<String, dynamic>> orders) async {
     final toCheck = orders.where((o) {
       final oid = _orderId(o);
@@ -432,9 +485,8 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 
         if (rawStatus.isEmpty) return;
 
-        // CURRENT: translate to customer-facing label at fetch time
         final label = _deliveryStatusToLabel(rawStatus);
-        if (label == null) return;   // terminal/unknown — let order status show
+        if (label == null) return;
 
         debugPrint('📦 [delivery] $oid: "$rawStatus" → "$label"');
         if (mounted) setState(() => _deliveryStatusCache[oid] = label);
@@ -442,40 +494,114 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
     } catch (e) { debugPrint('⚠️ delivery enrich $oid: $e'); }
   }
 
-  // ── Payment enrichment ──────────────────────────────
-  Future<void> _enrichPaymentStatuses(List<Map<String, dynamic>> orders) async {
-    final toFetch = orders.where((o) => _orderId(o).isNotEmpty).toList();
-    for (int i = 0; i < toFetch.length; i += 5) {
-      await Future.wait(toFetch.skip(i).take(5).map(_fetchPaymentStatus));
+  // ── FIX: Enrich ALL payment statuses on every load ──
+  // This is the key fix — we don't skip anything on initial load.
+  Future<void> _enrichAllPaymentStatuses(
+      List<Map<String, dynamic>> orders) async {
+    await _enrichPaymentStatusesBatch(orders);
+  }
+
+  Future<void> _enrichPaymentStatusesBatch(
+      List<Map<String, dynamic>> orders) async {
+    if (orders.isEmpty) return;
+    _enrichmentInProgress = true;
+    try {
+      for (int i = 0; i < orders.length; i += 5) {
+        final batch = orders.skip(i).take(5).toList();
+        await Future.wait(batch.map(_fetchPaymentStatus));
+        // Update UI after each batch so statuses appear progressively
+        if (mounted) setState(() {});
+      }
+    } finally {
+      _enrichmentInProgress = false;
     }
-    if (mounted) setState(() {});
   }
 
   Future<void> _fetchPaymentStatus(Map<String, dynamic> order) async {
     final oid = _orderId(order);
     if (oid.isEmpty) return;
     try {
+      // ── FIX: Also try fetching by groupOrderId if present ──
+      final groupId = (order['groupOrderId'] ?? '').toString();
+
       final result = await AuthService.instance.getPaymentByOrderId(oid);
-      if (result.success && result.data != null) {
-        final raw = result.data!['paymentStatus'] ?? result.data!['status'];
-        int? statusInt;
-        if (raw is int) {
-          statusInt = raw;
-        } else if (raw is String) {
-          switch (raw.toLowerCase()) {
-            case 'pending':                        statusInt = _kPayPending;   break;
-            case 'completed': case 'paid':
-            case 'succeeded':                      statusInt = _kPayCompleted; break;
-            case 'failed':                         statusInt = _kPayFailed;    break;
-            case 'cancelled': case 'canceled':     statusInt = _kPayCancelled; break;
-            case 'refunded':                       statusInt = _kPayRefunded;  break;
+
+      // ── FIX: Also try group-level payment if individual fails ──
+      if ((!result.success || result.data == null) && groupId.isNotEmpty && groupId != oid) {
+        debugPrint('💳 [payment] $oid: individual fetch failed, trying groupId $groupId');
+        final groupResult = await AuthService.instance.getPaymentByOrderId(groupId);
+        if (groupResult.success && groupResult.data != null) {
+          final statusInt = _parsePaymentStatus(groupResult.data!);
+          if (statusInt != null && mounted) {
+            debugPrint('💳 [payment] groupId $groupId: status=$statusInt (applied to $oid)');
+            setState(() {
+              _paymentStatusCache[oid]     = statusInt;
+              _paymentStatusCache[groupId] = statusInt;
+              if (statusInt != _kPayPending) {
+                _terminalPaymentIds.add(oid);
+                _terminalPaymentIds.add(groupId);
+              }
+            });
           }
         }
+        return;
+      }
+
+      if (result.success && result.data != null) {
+        final statusInt = _parsePaymentStatus(result.data!);
         if (statusInt != null && mounted) {
-          setState(() => _paymentStatusCache[oid] = statusInt!);
+          debugPrint('💳 [payment] $oid: status=$statusInt');
+          setState(() {
+            _paymentStatusCache[oid] = statusInt;
+            // ── FIX: If this order belongs to a group, propagate
+            // the payment status to the group key too so the card
+            // always reflects the correct status.
+            if (groupId.isNotEmpty && groupId != oid) {
+              _paymentStatusCache.putIfAbsent(groupId, () => statusInt);
+            }
+            if (statusInt != _kPayPending) {
+              _terminalPaymentIds.add(oid);
+            }
+          });
         }
       }
     } catch (e) { debugPrint('⚠️ payment enrich $oid: $e'); }
+  }
+
+  // ── FIX: Centralised payment status parser ──
+  int? _parsePaymentStatus(Map<String, dynamic> data) {
+    // Try multiple field names the backend might use
+    final raw = data['paymentStatus'] ??
+        data['status'] ??
+        data['payment_status'] ??
+        data['PaymentStatus'] ??
+        data['Status'];
+
+    if (raw == null) return null;
+
+    if (raw is int) return raw;
+
+    if (raw is String) {
+      switch (raw.toLowerCase().trim()) {
+        case 'pending':                          return _kPayPending;
+        case 'completed':
+        case 'paid':
+        case 'succeeded':
+        case 'success':
+        case 'captured':                         return _kPayCompleted;
+        case 'failed':
+        case 'failure':                          return _kPayFailed;
+        case 'cancelled':
+        case 'canceled':                         return _kPayCancelled;
+        case 'refunded':                         return _kPayRefunded;
+        default:
+          // Try parsing as integer string
+          final parsed = int.tryParse(raw);
+          return parsed;
+      }
+    }
+
+    return null;
   }
 
   List<Map<String, dynamic>> _extractItems(Map<String, dynamic> data) {
@@ -557,7 +683,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   }
 
   // ══════════════════════════════════════════════════════
-  //  FILTER BOTTOM SHEET  (CURRENT — kept in full)
+  //  FILTER BOTTOM SHEET
   // ══════════════════════════════════════════════════════
   Future<void> _showFilterSheet() async {
     _OrderFilter temp = _filter.copyWith();
@@ -764,17 +890,15 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
   // ══════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    // BOTH: filter flat list → then group
     final activeGroups    = _applyFilterAndGroup(
         _rawOrders.where(_isActive).toList());
     final completedGroups = _applyFilterAndGroup(
         _rawOrders.where(_isCompleted).toList());
     final allGroups       = _applyFilterAndGroup(_rawOrders);
 
-    // Raw (unfiltered) counts for filter-empty-state detection
-    final activeRaw    = _rawOrders.where(_isActive).length;
-    final completedRaw = _rawOrders.where(_isCompleted).length;
-    final allRaw       = _rawOrders.length;
+    final activeRaw    = activeGroups.length;
+    final completedRaw = completedGroups.length;
+    final allRaw       = allGroups.length;
 
     final filterCount = _filter.activeFilterCount;
 
@@ -786,7 +910,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
         foregroundColor: AppColors.white,
         elevation:       0,
         actions: [
-          // CURRENT: filter badge
           Stack(clipBehavior: Clip.none, children: [
             IconButton(
               icon:      const Icon(Icons.tune),
@@ -834,7 +957,6 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
           : _error != null && _rawOrders.isEmpty
               ? _ErrorView(message: _error!, onRetry: _loadOrders)
               : Column(children: [
-                  // CURRENT: active filters bar
                   if (_filter.hasActiveFilters)
                     _ActiveFiltersBar(
                       filter:    _filter,
@@ -921,9 +1043,10 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                 final oid         = _orderId(o);
                 final isDelivered = _isCompleted(o);
                 final showDisputeBtn = showDispute && isDelivered;
-                final payStatus   = _paymentStatus(oid);
 
-                // INCOMING: multi-supplier label
+                // ── FIX: Use group-level payment status aggregation ──
+                final payStatus = _groupPaymentStatus(group);
+
                 final supplierLabel = group.isMultiSupplier
                     ? '${group.orders.length} Suppliers'
                     : _supplierName(o);
@@ -941,18 +1064,21 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
                   showDispute:     showDisputeBtn,
                   paymentStatus:   payStatus,
                   isMultiSupplier: group.isMultiSupplier,
-                  onTap: () {
-                    // INCOMING: route to grouped tracking if multi-supplier
+                  onTap: () async {
                     if (group.isMultiSupplier) {
-                      Navigator.push(context, MaterialPageRoute(
+                      await Navigator.push(context, MaterialPageRoute(
                         builder: (_) => GroupedOrderTrackingScreen(
                           groupId: group.groupId,
                           orders:  group.orders,
                         ),
                       ));
                     } else {
-                      Navigator.push(context, MaterialPageRoute(
+                      await Navigator.push(context, MaterialPageRoute(
                           builder: (_) => OrderTrackingScreen(order: o)));
+                    }
+                    // Re-enrich payment when returning from detail screen
+                    if (mounted) {
+                      _reEnrichPaymentStatuses();
                     }
                   },
                   onCancel:  () => _showCancelDialog(o),
@@ -965,7 +1091,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen>
 }
 
 // ══════════════════════════════════════════════════════════
-//  ACTIVE FILTERS BAR  (CURRENT)
+//  ACTIVE FILTERS BAR
 // ══════════════════════════════════════════════════════════
 class _ActiveFiltersBar extends StatelessWidget {
   final _OrderFilter filter;
@@ -1042,7 +1168,7 @@ class _ActiveFiltersBar extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════
-//  SHEET HELPER WIDGETS  (CURRENT)
+//  SHEET HELPER WIDGETS
 // ══════════════════════════════════════════════════════════
 class _SheetSection extends StatelessWidget {
   final String label; final List<Widget> children;
@@ -1184,7 +1310,7 @@ class _PaymentBadge extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════
-//  ORDER CARD  (BOTH: CURRENT layout + INCOMING isMultiSupplier badge)
+//  ORDER CARD
 // ══════════════════════════════════════════════════════════
 class _OrderCard extends StatelessWidget {
   final String orderId, orderNumber, status, supplierName, date, time;
@@ -1265,7 +1391,6 @@ class _OrderCard extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-              // INCOMING: multi-supplier badge
               if (isMultiSupplier)
                 Container(
                   margin: const EdgeInsets.only(bottom: 4),
@@ -1322,6 +1447,9 @@ class _OrderCard extends StatelessWidget {
                     fontSize: 11, fontWeight: FontWeight.w600, color: color)),
               ),
               const SizedBox(height: 5),
+              // ── FIX: Show payment badge if resolved, spinner only
+              // if truly not yet fetched (null). Never get stuck on
+              // spinner for a resolved order.
               if (paymentStatus != null)
                 _PaymentBadge(paymentStatus!)
               else

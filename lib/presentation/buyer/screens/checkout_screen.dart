@@ -270,75 +270,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       return;
     }
 
-    // INCOMING: multi-supplier warning dialog
-    final supplierIds = widget.cartItems
-        .map((i) => (i['supplierId'] ?? i['supplier']?['id'] ?? '').toString())
-        .where((id) => id.isNotEmpty)
-        .toSet();
-
-    if (supplierIds.length > 1) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.store, color: AppColors.primary, size: 22),
-            ),
-            const SizedBox(width: 12),
-            const Text('Multiple Suppliers'),
-          ]),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(
-              'You are ordering from ${supplierIds.length} suppliers.',
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary),
-            ),
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.warning.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
-              ),
-              child: const Row(children: [
-                Icon(Icons.info_outline, color: AppColors.warning, size: 18),
-                SizedBox(width: 8),
-                Expanded(child: Text(
-                  'Each supplier handles their own delivery separately. '
-                  'A delivery fee is charged per supplier.',
-                  style: TextStyle(fontSize: 13, color: AppColors.textPrimary),
-                )),
-              ]),
-            ),
-          ]),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Go Back')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8)),
-              ),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-    }
+    
+    
 
     setState(() => _isPlacingOrder = true);
 
