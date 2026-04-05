@@ -636,8 +636,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
     setState(() => _isSubmitting = false);
 
     if (result.success) {
-     
-
       _locationTimer?.cancel();
       _hubConnection?.stop();
       setState(() => _step = 2);
@@ -649,8 +647,6 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
       _snack(result.message ?? 'Failed to complete delivery.', isError: true);
     }
   }
-
-  
 
   // ── SUCCESS DIALOG ────────────────────────────────────
   void _showSuccessDialog(Map<String, dynamic>? responseData) {
@@ -782,30 +778,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
             ]))
           : SingleChildScrollView(
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Container(
-                  height: 200, color: AppColors.surfaceLight,
-                  child: Stack(children: [
-                    Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      const Icon(Icons.navigation, size: 60, color: AppColors.primary),
-                      const SizedBox(height: 8),
-                      const Text('Navigation Active',
-                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary)),
-                      if (distanceStr.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(distanceStr, style: const TextStyle(
-                            fontSize: 13, color: AppColors.textSecondary)),
-                      ],
-                    ])),
-                    Positioned(top: 12, right: 12,
-                      child: FloatingActionButton.small(
-                        heroTag: 'active_loc_fab',
-                        onPressed: () => _sendLocation(),
-                        backgroundColor: AppColors.white,
-                        child: const Icon(Icons.my_location, color: AppColors.primary),
-                      )),
-                  ]),
-                ),
+
+                // ── Status Banner ───────────────────────
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
                   color: _step == 1 ? AppColors.success : AppColors.primary,
@@ -817,6 +791,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     Text(orderNum, style: const TextStyle(fontSize: 13, color: AppColors.white)),
                   ]),
                 ),
+
+                // ── Step Indicator ──────────────────────
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   child: Row(children: [
@@ -829,6 +805,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     _StepDot(active: _step >= 2, done: _step >= 2, label: 'Done'),
                   ]),
                 ),
+
+                // ── Pickup Step ─────────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                   child: _DeliveryStep(
@@ -838,6 +816,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     onButtonPressed: _step == 0 ? _showPickupSheet : null,
                   ),
                 ),
+
+                // ── Delivery Step ───────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   child: _DeliveryStep(
@@ -847,6 +827,8 @@ class _ActiveDeliveryScreenState extends State<ActiveDeliveryScreen> {
                     onButtonPressed: _step == 1 ? _showCompleteSheet : null,
                   ),
                 ),
+
+                // ── Delivery Details ────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                   child: Container(

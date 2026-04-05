@@ -597,11 +597,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 ],
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.notifications_outlined),
-              color: AppColors.white,
-              onPressed: () {},
-            ),
           ],
         ),
         const SizedBox(height: 20),
