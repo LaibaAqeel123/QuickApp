@@ -27,7 +27,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
   String _vehicleType  = 'N/A';
   String _vehicleModel = 'N/A';
   String _licensePlate = 'N/A';
-  double _rating       = 0.0;
 
   // ── Stats fields (from GET /api/Drivers/{id}/stats) ────
   int    _totalDeliveries = 0;
@@ -101,15 +100,13 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
     if (!mounted || !result.success || result.data == null) return;
     final d = result.data!;
     setState(() {
-      _driverName  = _extract(d, ['fullName', 'name', 'firstName']) ?? 'Driver';
-      _vehicleType = _extract(d, ['vehicleType', 'vehicle.type'])   ?? 'N/A';
-      _vehicleModel= _extract(d, ['vehicleModel', 'vehicle.model']) ?? 'N/A';
-      _licensePlate= _extract(d, ['licensePlate', 'plate'])         ?? 'N/A';
-      _rating      = double.tryParse(
-          _extract(d, ['rating', 'averageRating']) ?? '0') ?? 0.0;
-      final status = _extract(d, [
+      _driverName   = _extract(d, ['fullName', 'name', 'firstName']) ?? 'Driver';
+      _vehicleType  = _extract(d, ['vehicleType', 'vehicle.type'])   ?? 'N/A';
+      _vehicleModel = _extract(d, ['vehicleModel', 'vehicle.model']) ?? 'N/A';
+      _licensePlate = _extract(d, ['licensePlate', 'plate'])         ?? 'N/A';
+      final status  = _extract(d, [
         'isAvailable', 'available', 'isOnline', 'online']);
-      _isOnline    = status == 'true' || status == '1' || status == 'online';
+      _isOnline     = status == 'true' || status == '1' || status == 'online';
     });
   }
 
@@ -142,9 +139,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       _totalEarnings   = (d['totalEarnings']   as num?)?.toDouble() ?? 0.0;
       _acceptanceRate  = (d['acceptanceRate']  as num?)?.toDouble() ?? 0.0;
       _totalOffers     = (d['totalOffers']     as num?)?.toInt()    ?? 0;
-      // Override rating from stats if available (more accurate)
-      final statRating = (d['rating'] as num?)?.toDouble();
-      if (statRating != null && statRating > 0) _rating = statRating;
     });
   }
 
@@ -173,7 +167,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           return null;
         }
       }
-      
+
       if (permission == LocationPermission.deniedForever) {
         debugPrint('║  ❌ Location permissions are permanently denied');
         _snack('Location permissions are permanently denied. Please enable in settings.', isError: true);
@@ -183,12 +177,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      
+
       debugPrint('║  ✅ Location obtained:');
       debugPrint('║     lat: ${position.latitude}');
       debugPrint('║     lng: ${position.longitude}');
       debugPrint('║     accuracy: ${position.accuracy}m');
-      
+
       return position;
     } catch (e) {
       debugPrint('║  ❌ Error getting location: $e');
@@ -242,7 +236,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           isError: true);
       return;
     }
-    
+
     setState(() => _isToggling = true);
 
     debugPrint('\n╔══════════════════════════════════════╗');
@@ -256,12 +250,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       final position = await _getCurrentLocation();
       if (position == null) {
         setState(() => _isToggling = false);
-        return; // Don't proceed if we can't get location
+        return;
       }
-      
-      // Call toggle API
+
       final result = await AuthService.instance.toggleDriverAvailability(_driverId!);
-      
+
       debugPrint('\n╔══════════════════════════════════════╗');
       debugPrint('║  TOGGLE RESULT');
       debugPrint('║  success : ${result.success}');
@@ -269,25 +262,23 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       debugPrint('╚══════════════════════════════════════╝');
 
       if (!mounted) return;
-      
+
       if (result.success) {
-        // After successful toggle, update location
         final locationUpdated = await _updateDriverLocation(position);
-        
+
         if (locationUpdated) {
           final raw = result.data != null
               ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
               : null;
           final newState = raw != null ? (raw == 'true') : !_isOnline;
-          
-          setState(() { 
-            _isOnline = newState; 
-            _isToggling = false; 
+
+          setState(() {
+            _isOnline  = newState;
+            _isToggling = false;
           });
-          
+
           _snack('You\'re now Online 🟢');
         } else {
-          // Location update failed, revert toggle
           await AuthService.instance.toggleDriverAvailability(_driverId!);
           setState(() => _isToggling = false);
           _snack('Failed to update location. Please try again.', isError: true);
@@ -297,9 +288,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
         _snack(result.message ?? 'Failed to update status.', isError: true);
       }
     } else {
-      // Going offline - no need for location
+      // Going offline — no location needed
       final result = await AuthService.instance.toggleDriverAvailability(_driverId!);
-      
+
       debugPrint('\n╔══════════════════════════════════════╗');
       debugPrint('║  TOGGLE RESULT (Offline)');
       debugPrint('║  success : ${result.success}');
@@ -307,18 +298,18 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
       debugPrint('╚══════════════════════════════════════╝');
 
       if (!mounted) return;
-      
+
       if (result.success) {
         final raw = result.data != null
             ? _extract(result.data!, ['isAvailable', 'available', 'isOnline'])
             : null;
         final newState = raw != null ? (raw == 'true') : !_isOnline;
-        
-        setState(() { 
-          _isOnline = newState; 
-          _isToggling = false; 
+
+        setState(() {
+          _isOnline  = newState;
+          _isToggling = false;
         });
-        
+
         _snack('You\'re now Offline 🔴');
       } else {
         setState(() => _isToggling = false);
@@ -420,25 +411,19 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                               )),
                             ]),
                             const SizedBox(height: 12),
-                            Row(children: [
-                              Expanded(child: _StatCard(
-                                icon:  Icons.star,
-                                value: _rating > 0
-                                    ? _rating.toStringAsFixed(1)
-                                    : 'N/A',
-                                label: 'Rating',
-                                color: AppColors.warning,
-                              )),
-                              const SizedBox(width: 12),
-                              Expanded(child: _StatCard(
-                                icon:  Icons.trending_up,
-                                value: _statsLoaded
-                                    ? '${_acceptanceRate.toStringAsFixed(0)}%'
-                                    : 'N/A',
-                                label: 'Acceptance',
-                                color: AppColors.info,
-                              )),
-                            ]),
+                            // Acceptance rate — full width now that rating is removed
+                            SizedBox(
+                              width : double.infinity,
+
+                            child: _StatCard(
+                              icon:  Icons.trending_up,
+                              value: _statsLoaded
+                                  ? '${_acceptanceRate.toStringAsFixed(0)}%'
+                                  : 'N/A',
+                              label: 'Acceptance Rate',
+                              color: AppColors.info,
+                            ),
+                            ),
                           ],
                         ),
                       ),
@@ -446,8 +431,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
 
                       // ── Vehicle card ────────────────────
                       Padding(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 16),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -507,15 +491,13 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 fontWeight: FontWeight.bold,
                 color: AppColors.textPrimary)),
         const SizedBox(height: 12),
-        // Available Jobs — primary CTA
         SizedBox(
           width: double.infinity, height: 56,
           child: ElevatedButton.icon(
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) =>
-                    AvailableJobsScreen(driverId: _driverId),
+                builder: (_) => AvailableJobsScreen(driverId: _driverId),
               ),
             ),
             icon: const Icon(Icons.work),
@@ -525,7 +507,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           ),
         ),
         const SizedBox(height: 10),
-        // Earnings + Stats side by side
         Row(children: [
           Expanded(
             child: SizedBox(
@@ -534,8 +515,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 onPressed: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) =>
-                        EarningsScreen(driverId: _driverId),
+                    builder: (_) => EarningsScreen(driverId: _driverId),
                   ),
                 ),
                 icon: const Icon(Icons.account_balance_wallet_outlined,
@@ -552,8 +532,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
                 onPressed: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) =>
-                        DriverStatsScreen(driverId: _driverId),
+                    builder: (_) => DriverStatsScreen(driverId: _driverId),
                   ),
                 ),
                 icon: const Icon(Icons.bar_chart, size: 18),
@@ -641,25 +620,6 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
             ],
           ),
         ),
-
-        // Rating stars
-        if (_rating > 0) ...[
-          const SizedBox(height: 12),
-          Row(children: [
-            ...List.generate(5, (i) => Icon(
-              i < _rating.floor()
-                  ? Icons.star
-                  : (i < _rating ? Icons.star_half : Icons.star_border),
-              size: 20, color: AppColors.warning,
-            )),
-            const SizedBox(width: 8),
-            Text(
-              '${_rating.toStringAsFixed(1)} rating',
-              style: const TextStyle(
-                  fontSize: 14, color: AppColors.white),
-            ),
-          ]),
-        ],
 
         // Total offers pill (from stats)
         if (_statsLoaded && _totalOffers > 0) ...[
