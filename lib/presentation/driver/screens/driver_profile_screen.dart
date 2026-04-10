@@ -5,6 +5,80 @@ import 'package:food_delivery_app/presentation/driver/screens/documents_screen.d
 import 'package:food_delivery_app/presentation/driver/screens/payout_history_screen.dart';
 import 'package:food_delivery_app/presentation/auth/screens/login_screen.dart';
 
+// ══════════════════════════════════════════════════════════
+//  DRIVER PROFILE MODEL
+// ══════════════════════════════════════════════════════════
+class _DriverProfile {
+  final String name;
+  final String email;
+  final String vehicleType;
+  final String registration;
+
+  const _DriverProfile({
+    required this.name,
+    required this.email,
+    required this.vehicleType,
+    required this.registration,
+  });
+
+  /// Parses the raw JSON returned by GET /api/Drivers/{id}
+  /// Name resolution matches DriverHomeScreen: fullName → name → firstName
+  factory _DriverProfile.fromJson(Map<String, dynamic> json) {
+    // Name: use the same priority order as DriverHomeScreen
+    final name = _extractField(json, ['fullName', 'name', 'firstName']) ?? '';
+
+    // Email
+    final email = json['email']?.toString().trim() ?? '';
+
+    // Vehicle details may be nested under 'vehicle' or 'vehicleDetails'
+    final vehicleMap =
+        json['vehicle']        is Map<String, dynamic> ? json['vehicle']        as Map<String, dynamic>
+      : json['vehicleDetails'] is Map<String, dynamic> ? json['vehicleDetails'] as Map<String, dynamic>
+      : null;
+
+    final vehicleType = vehicleMap?['vehicleType']?.toString()
+        ?? vehicleMap?['type']?.toString()
+        ?? json['vehicleType']?.toString()
+        ?? json['vehicle_type']?.toString()
+        ?? '';
+
+    final registration = vehicleMap?['licensePlate']?.toString()
+        ?? vehicleMap?['registration']?.toString()
+        ?? json['licensePlate']?.toString()
+        ?? json['registration']?.toString()
+        ?? '';
+
+    return _DriverProfile(
+      name:         name,
+      email:        email,
+      vehicleType:  vehicleType,
+      registration: registration,
+    );
+  }
+
+  /// Mirrors the _extract() helper used in DriverHomeScreen.
+  /// Supports dot-notation keys (e.g. 'vehicle.type').
+  static String? _extractField(Map<String, dynamic> body, List<String> keys) {
+    for (final key in keys) {
+      if (key.contains('.')) {
+        final parts = key.split('.');
+        dynamic node = body;
+        for (final p in parts) {
+          node = (node is Map<String, dynamic>) ? node[p] : null;
+        }
+        if (node != null) return node.toString().trim();
+      } else if (body[key] != null) {
+        final val = body[key].toString().trim();
+        if (val.isNotEmpty) return val;
+      }
+    }
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  DRIVER PROFILE SCREEN
+// ══════════════════════════════════════════════════════════
 class DriverProfileScreen extends StatefulWidget {
   final String? driverId;
   const DriverProfileScreen({super.key, this.driverId});
@@ -14,22 +88,70 @@ class DriverProfileScreen extends StatefulWidget {
 }
 
 class _DriverProfileScreenState extends State<DriverProfileScreen> {
-  String? _driverId;
+  String?         _driverId;
+  _DriverProfile? _profile;
+  bool            _isLoading = true;
+  String?         _error;
 
   @override
   void initState() {
     super.initState();
-    _resolveDriverId();
+    _loadProfile();
   }
 
-  Future<void> _resolveDriverId() async {
-    final id = widget.driverId ??
-        await AuthService.instance.getSavedDriverId();
-    if (mounted) setState(() => _driverId = id);
+  // ── Resolve driver ID → fetch profile from backend ──────
+  Future<void> _loadProfile() async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _error     = null;
+    });
+
+    try {
+      // 1. Resolve driver ID (passed in or from SharedPreferences)
+      final id = widget.driverId ??
+          await AuthService.instance.getSavedDriverId();
+
+      if (id == null || id.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _error     = 'Driver ID not found. Please log in again.';
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+
+      // 2. GET /api/Drivers/{id}  →  AuthResult
+      //    AuthResult.data is Map<String, dynamic> with driver JSON
+      final result = await AuthService.instance.getDriverProfile(id);
+
+      if (!mounted) return;
+
+      if (result.success && result.data != null) {
+        setState(() {
+          _driverId  = id;
+          _profile   = _DriverProfile.fromJson(result.data!);
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _error     = result.message ?? 'Failed to load profile.';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error     = 'Unexpected error. Please try again.';
+          _isLoading = false;
+        });
+      }
+    }
   }
 
-  // ── Logout dialog ───────────────────────────────────
-  void _showLogoutDialog(BuildContext context) {
+  // ── Logout ───────────────────────────────────────────────
+  void _showLogoutDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -42,6 +164,7 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
           ),
           TextButton(
             onPressed: () async {
+              Navigator.pop(ctx);
               await AuthService.instance.logout();
               if (!mounted) return;
               Navigator.of(context).pushAndRemoveUntil(
@@ -57,8 +180,9 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
     );
   }
 
-  // ── Navigate to Payout History ──────────────────────
-  void _openPayoutHistory(BuildContext context) {
+  // ── Payout History → PayoutHistoryScreen ────────────────
+  // Uses: GET /api/Earnings/drivers/{driverId}/payouts
+  void _openPayoutHistory() {
     if (_driverId == null || _driverId!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Driver ID not found. Please log in again.'),
@@ -68,12 +192,20 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => PayoutHistoryScreen(driverId: _driverId!),
-      ),
+          builder: (_) => PayoutHistoryScreen(driverId: _driverId!)),
     );
   }
 
-  // ── Build ───────────────────────────────────────────
+  // ── Documents ────────────────────────────────────────────
+  // Uses: POST /api/Drivers/{id}/upload-document
+  void _openDocuments() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const DocumentsScreen()),
+    );
+  }
+
+  // ── Build ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -83,240 +215,188 @@ class _DriverProfileScreenState extends State<DriverProfileScreen> {
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation:       0,
+        actions: [
+          if (!_isLoading)
+            IconButton(
+              icon:      const Icon(Icons.refresh),
+              tooltip:   'Refresh',
+              onPressed: _loadProfile,
+            ),
+        ],
       ),
-      body: SingleChildScrollView(
-        child: Column(children: [
+      body: _buildBody(),
+    );
+  }
 
-          // ── Profile Header ──────────────────────────
-          Container(
-            padding: const EdgeInsets.all(24),
-            color:   AppColors.primary,
-            child: Column(children: [
-              Container(
-                width: 100, height: 100,
-                decoration: BoxDecoration(
-                  color:  AppColors.white,
-                  shape:  BoxShape.circle,
-                  border: Border.all(color: AppColors.white, width: 4),
-                ),
-                child: const Icon(Icons.person,
-                    size: 50, color: AppColors.primary),
-              ),
-              const SizedBox(height: 16),
-              const Text('John Driver',
-                  style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.white)),
-              const SizedBox(height: 4),
-              Text('driver@test.com',
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.white.withOpacity(0.8))),
-              const SizedBox(height: 16),
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                const Icon(Icons.star, size: 20, color: AppColors.warning),
-                const SizedBox(width: 4),
-                const Text('4.9',
-                    style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.white)),
-                const SizedBox(width: 4),
-                Text('(250 deliveries)',
-                    style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.white.withOpacity(0.8))),
-              ]),
-            ]),
-          ),
+  Widget _buildBody() {
+    // Loading
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
-          // ── Stats ───────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              Expanded(
-                child: _StatBox(
-                  icon:  Icons.local_shipping,
-                  value: '250',
-                  label: 'Deliveries',
-                  color: AppColors.primary,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _StatBox(
-                  icon:  Icons.attach_money,
-                  value: '£12.5K',
-                  label: 'Total Earned',
-                  color: AppColors.success,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _StatBox(
-                  icon:  Icons.timer,
-                  value: '6mo',
-                  label: 'Member',
-                  color: AppColors.info,
-                ),
-              ),
-            ]),
-          ),
-
-          // ── Vehicle ─────────────────────────────────
-          _SectionCard(
-            label: 'Vehicle',
-            children: [
-              _MenuItem(
-                icon:     Icons.directions_car,
-                title:    'Vehicle Type',
-                subtitle: 'Van',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.confirmation_number,
-                title:    'Registration',
-                subtitle: 'ABC 1234',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.description,
-                title:    'Documents',
-                subtitle: 'View and manage',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const DocumentsScreen()),
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // ── Earnings ─────────────────────────────────
-          // NEW: Payout History added here
-          _SectionCard(
-            label: 'Earnings',
-            children: [
-              _MenuItem(
-                icon:     Icons.receipt_long_outlined,
-                title:    'Payout History',
-                subtitle: 'View all your payout periods',
-                // Highlighted in primary colour to draw attention
-                iconColor: AppColors.primary,
-                onTap: () => _openPayoutHistory(context),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // ── Account ──────────────────────────────────
-          _SectionCard(
-            label: 'Account',
-            children: [
-              _MenuItem(
-                icon:     Icons.person_outlined,
-                title:    'Personal Information',
-                subtitle: 'Update your details',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.account_balance_wallet,
-                title:    'Payment Details',
-                subtitle: 'Bank account for payouts',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.location_on_outlined,
-                title:    'Preferred Areas',
-                subtitle: 'Set your delivery zones',
-                onTap:    () {},
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // ── Settings ─────────────────────────────────
-          _SectionCard(
-            label: 'Settings',
-            children: [
-              _MenuItem(
-                icon:     Icons.notifications_outlined,
-                title:    'Notifications',
-                subtitle: 'Manage notification preferences',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.language,
-                title:    'Language',
-                subtitle: 'English (UK)',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.help_outlined,
-                title:    'Help & Support',
-                subtitle: 'FAQs and contact support',
-                onTap:    () {},
-              ),
-              const Divider(height: 1),
-              _MenuItem(
-                icon:     Icons.info_outlined,
-                title:    'About',
-                subtitle: 'App version 1.0.0',
-                onTap:    () {},
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-
-          // ── Logout ───────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SizedBox(
-              width:  double.infinity,
-              height: 56,
-              child: OutlinedButton(
-                onPressed: () => _showLogoutDialog(context),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.error,
-                  side: const BorderSide(color: AppColors.error),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                  Icon(Icons.logout),
-                  SizedBox(width: 8),
-                  Text('Logout',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w600)),
-                ]),
+    // Error
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.error_outline,
+                size: 52, color: AppColors.error),
+            const SizedBox(height: 16),
+            Text(_error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 15, color: AppColors.textSecondary)),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _loadProfile,
+              icon:  const Icon(Icons.refresh),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.white,
               ),
             ),
+          ]),
+        ),
+      );
+    }
+
+    // Success
+    final profile = _profile!;
+    return SingleChildScrollView(
+      child: Column(children: [
+
+        // ── Profile Header ──────────────────────────────
+        Container(
+          width:   double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 24),
+          color:   AppColors.primary,
+          child: Column(children: [
+            Container(
+              width: 96, height: 96,
+              decoration: BoxDecoration(
+                color:  AppColors.white,
+                shape:  BoxShape.circle,
+                border: Border.all(color: AppColors.white, width: 4),
+              ),
+              child: const Icon(Icons.person,
+                  size: 48, color: AppColors.primary),
+            ),
+            const SizedBox(height: 14),
+
+            // Name resolved via fullName → name → firstName
+            // (matches DriverHomeScreen._extract logic)
+            Text(
+              profile.name.isNotEmpty ? profile.name : '—',
+              style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.white),
+            ),
+            const SizedBox(height: 4),
+
+            // Email from GET /api/Drivers/{id}
+            if (profile.email.isNotEmpty)
+              Text(
+                profile.email,
+                style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.white.withOpacity(0.85)),
+              ),
+          ]),
+        ),
+
+        const SizedBox(height: 24),
+
+        // ── Vehicle ─────────────────────────────────────
+        _SectionCard(
+          label: 'Vehicle',
+          children: [
+            _MenuItem(
+              icon:     Icons.directions_car,
+              title:    'Vehicle Type',
+              subtitle: profile.vehicleType.isNotEmpty
+                  ? profile.vehicleType
+                  : 'Not set',
+              onTap:    () {},
+            ),
+            const Divider(height: 1),
+            _MenuItem(
+              icon:     Icons.confirmation_number,
+              title:    'Registration',
+              subtitle: profile.registration.isNotEmpty
+                  ? profile.registration
+                  : 'Not set',
+              onTap:    () {},
+            ),
+            const Divider(height: 1),
+            _MenuItem(
+              icon:     Icons.description,
+              title:    'Documents',
+              subtitle: 'View and manage',
+              onTap:    _openDocuments,
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── Earnings ─────────────────────────────────────
+        _SectionCard(
+          label: 'Earnings',
+          children: [
+            _MenuItem(
+              icon:      Icons.receipt_long_outlined,
+              iconColor: AppColors.primary,
+              title:     'Payout History',
+              subtitle:  'View all your payout periods',
+              onTap:     _openPayoutHistory,
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 32),
+
+        // ── Logout ───────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SizedBox(
+            width:  double.infinity,
+            height: 56,
+            child: OutlinedButton(
+              onPressed: _showLogoutDialog,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.error,
+                side: const BorderSide(color: AppColors.error),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                Icon(Icons.logout),
+                SizedBox(width: 8),
+                Text('Logout',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600)),
+              ]),
+            ),
           ),
-          const SizedBox(height: 32),
-        ]),
-      ),
+        ),
+
+        const SizedBox(height: 36),
+      ]),
     );
   }
 }
 
 // ══════════════════════════════════════════════════════════
-//  SECTION CARD WRAPPER
+//  SECTION CARD
 // ══════════════════════════════════════════════════════════
 class _SectionCard extends StatelessWidget {
-  final String        label;
-  final List<Widget>  children;
+  final String       label;
+  final List<Widget> children;
   const _SectionCard({required this.label, required this.children});
 
   @override
@@ -342,50 +422,12 @@ class _SectionCard extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════
-//  STAT BOX
-// ══════════════════════════════════════════════════════════
-class _StatBox extends StatelessWidget {
-  final IconData icon;
-  final String   value, label;
-  final Color    color;
-  const _StatBox({
-    required this.icon,
-    required this.value,
-    required this.label,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color:        AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border:       Border.all(color: AppColors.border),
-        ),
-        child: Column(children: [
-          Icon(icon, color: color, size: 28),
-          const SizedBox(height: 8),
-          Text(value,
-              style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary)),
-          const SizedBox(height: 4),
-          Text(label,
-              style: const TextStyle(
-                  fontSize: 11, color: AppColors.textSecondary),
-              textAlign: TextAlign.center),
-        ]),
-      );
-}
-
-// ══════════════════════════════════════════════════════════
 //  MENU ITEM
 // ══════════════════════════════════════════════════════════
 class _MenuItem extends StatelessWidget {
   final IconData     icon;
-  final String       title, subtitle;
+  final String       title;
+  final String       subtitle;
   final VoidCallback onTap;
   final Color?       iconColor;
 

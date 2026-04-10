@@ -383,10 +383,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
         backgroundColor: AppColors.primary,
         foregroundColor: AppColors.white,
         elevation: 0,
-        actions: [
-          IconButton(icon: const Icon(Icons.share),           onPressed: () {}),
-          IconButton(icon: const Icon(Icons.favorite_border), onPressed: () {}),
-        ],
+        
       ),
       body: Stack(children: [
         SingleChildScrollView(
@@ -529,73 +526,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   ),
                 const SizedBox(height: 24),
 
-                // Stock status
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: (_inStock
-                            ? AppColors.success : AppColors.error)
-                        .withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: (_inStock
-                                ? AppColors.success : AppColors.error)
-                            .withOpacity(0.3)),
-                  ),
-                  child: Row(children: [
-                    Icon(_inStock
-                            ? Icons.check_circle : Icons.cancel,
-                        color: _inStock
-                            ? AppColors.success : AppColors.error,
-                        size: 28),
-                    const SizedBox(width: 12),
-                    Column(crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Text(_inStock ? 'In Stock' : 'Out of Stock',
-                          style: TextStyle(fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: _inStock
-                                  ? AppColors.success : AppColors.error)),
-                      if (_inStock)
-                        Text('$_stock $_unit available',
-                            style: const TextStyle(fontSize: 13,
-                                color: AppColors.textSecondary)),
-                    ]),
-                  ]),
-                ),
-                const SizedBox(height: 24),
-
-                // Description
-                const Text('Description', style: TextStyle(fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
-                const SizedBox(height: 8),
-                Text(
-                  _description.isNotEmpty
-                      ? _description
-                      : 'Premium quality product sourced from trusted '
-                        'suppliers. Fresh and delivered on time with '
-                        'proper handling.',
-                  style: const TextStyle(fontSize: 15,
-                      color: AppColors.textSecondary, height: 1.5),
-                ),
-                const SizedBox(height: 24),
-
-                // Features
-                const Text('Product Features', style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary)),
-                const SizedBox(height: 12),
-                const _FeatureItem(icon: Icons.verified,
-                    title: 'Quality Assured',
-                    subtitle: 'Certified and inspected'),
-                const _FeatureItem(icon: Icons.local_shipping,
-                    title: 'Fast Delivery',
-                    subtitle: 'Same day delivery available'),
-                const _FeatureItem(icon: Icons.ac_unit,
-                    title: 'Proper Storage',
-                    subtitle: 'Temperature controlled'),
-                const SizedBox(height: 100),
+               
+                
               ]),
             ),
           ]),

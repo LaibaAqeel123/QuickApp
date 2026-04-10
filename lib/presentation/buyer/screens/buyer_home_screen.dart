@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:food_delivery_app/core/constants/app_colors.dart';
 import 'package:food_delivery_app/core/services/auth_service.dart';
+import 'package:food_delivery_app/core/widgets/auth_image.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/category_products_screen.dart';
 import 'package:food_delivery_app/presentation/buyer/screens/product_detail_screen.dart';
 
@@ -23,18 +24,21 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   @override
   void initState() {
     super.initState();
+    debugPrint('🏠 [BuyerHomeScreen] initState');
     _loadProfile();
     _loadCategories();
     _loadFeatured();
   }
 
   Future<void> _loadProfile() async {
+    debugPrint('👤 [BuyerHomeScreen] Loading profile...');
     final r = await AuthService.instance.getProfile();
     if (!mounted || !r.success || r.data == null) return;
     final d        = r.data!;
     final business = d['businessName']?.toString() ?? '';
     final first    = d['firstName']?.toString()    ?? '';
     final last     = d['lastName']?.toString()     ?? '';
+    debugPrint('✅ [BuyerHomeScreen] Profile loaded — business: "$business"');
     setState(() {
       _businessName = business.isNotEmpty
           ? business
@@ -46,15 +50,22 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   }
 
   Future<void> _loadCategories() async {
+    debugPrint('📂 [BuyerHomeScreen] Loading categories...');
     setState(() => _categoriesLoading = true);
     final r = await AuthService.instance.getCategories();
     if (!mounted) return;
-    setState(() {
-      _categories = r.success && r.data != null
-          ? r.data!.whereType<Map<String, dynamic>>().toList()
-          : _fallback;
-      _categoriesLoading = false;
-    });
+    if (r.success && r.data != null) {
+      final cats = r.data!.whereType<Map<String, dynamic>>().toList();
+      debugPrint('✅ [BuyerHomeScreen] Categories loaded — count: ${cats.length}');
+      for (int i = 0; i < cats.length && i < 4; i++) {
+        final cat = cats[i];
+        debugPrint('  📂 Category[$i]: name="${cat['name']}" imageUrl="${cat['imageUrl'] ?? cat['image']}"');
+      }
+      setState(() { _categories = cats; _categoriesLoading = false; });
+    } else {
+      debugPrint('⚠️  [BuyerHomeScreen] Categories failed, using fallback');
+      setState(() { _categories = _fallback; _categoriesLoading = false; });
+    }
   }
 
   static const List<Map<String, dynamic>> _fallback = [
@@ -69,6 +80,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   ];
 
   Future<void> _loadFeatured() async {
+    debugPrint('⭐ [BuyerHomeScreen] Loading featured products...');
     setState(() => _featuredLoading = true);
     final r = await AuthService.instance.getCatalogProducts(page: 1, pageSize: 4);
     if (!mounted) return;
@@ -79,11 +91,29 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
       else if (data['data']     is List) raw = data['data'];
       else if (data['products'] is List) raw = data['products'];
       else if (data['results']  is List) raw = data['results'];
-      setState(() {
-        _featured        = raw.whereType<Map<String, dynamic>>().take(4).toList();
-        _featuredLoading = false;
-      });
+      final items = raw.whereType<Map<String, dynamic>>().take(4).toList();
+
+      // ── Debug: check image data for each featured product ──
+      debugPrint('✅ [BuyerHomeScreen] Featured products loaded — count: ${items.length}');
+      for (int i = 0; i < items.length; i++) {
+        final p      = items[i];
+        final name   = p['name'] ?? p['productName'] ?? '?';
+        final images = p['images'];
+        final topUrl = p['imageUrl'] ?? p['image'];
+        debugPrint('  ⭐ Featured[$i] "$name":');
+        debugPrint('     images type: ${images.runtimeType}');
+        if (images is List) {
+          debugPrint('     images count: ${images.length}');
+          for (final img in images.take(2)) {
+            debugPrint('     img: $img');
+          }
+        }
+        debugPrint('     top-level imageUrl: $topUrl');
+      }
+
+      setState(() { _featured = items; _featuredLoading = false; });
     } else {
+      debugPrint('⚠️  [BuyerHomeScreen] Featured products failed: ${r.message}');
       setState(() => _featuredLoading = false);
     }
   }
@@ -103,27 +133,49 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   void _openCategory(Map<String, dynamic> cat) {
     final name  = cat['name']?.toString() ?? '';
     final intId = _extractCategoryId(cat);
-
-    assert(intId != null,
-        '[BuyerHomeScreen] Category "$name" has no parseable ID — '
-        'products will not be filtered. Raw cat: $cat');
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => CategoryProductsScreen(
-          category:   name,
-          categoryId: intId,
-          onViewCart: widget.onViewCart,
-        ),
+    debugPrint('📂 [BuyerHomeScreen] Opening category "$name" id=$intId');
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => CategoryProductsScreen(
+        category:   name,
+        categoryId: intId,
+        onViewCart: widget.onViewCart,
       ),
-    );
+    ));
   }
 
   String _pName(Map p)     => (p['name'] ?? p['productName'] ?? 'Product').toString();
   double _pPrice(Map p)    => ((p['price'] ?? p['unitPrice'] ?? p['basePrice'] ?? 0) as num).toDouble();
   String _pSupplier(Map p) => (p['supplierName'] ?? p['supplier']?['name'] ?? '').toString();
   String _pCategory(Map p) => (p['category'] ?? p['categoryName'] ?? '').toString();
+
+  /// Extract primary image URL from a product map (same logic as browse/cart)
+  String? _pImageUrl(Map<String, dynamic> p) {
+    final name   = p['name'] ?? '?';
+    final images = p['images'];
+    if (images is List && images.isNotEmpty) {
+      final typed = images.whereType<Map<String, dynamic>>().toList()
+        ..sort((a, b) {
+          final aP = a['isPrimary'] == true ? 0 : 1;
+          final bP = b['isPrimary'] == true ? 0 : 1;
+          return aP.compareTo(bP);
+        });
+      for (final img in typed) {
+        final url = (img['imageUrl'] ?? img['url'] ?? img['path'] ?? '')
+            .toString().trim();
+        if (url.isNotEmpty) {
+          debugPrint('🖼️  [HomeScreen] "$name" → image from array: $url');
+          return url;
+        }
+      }
+    }
+    final fallback = ( p['primaryImageUrl'] ?? p['imageUrl'] ?? p['image'])?.toString().trim();
+    if (fallback != null && fallback.isNotEmpty) {
+      debugPrint('🖼️  [HomeScreen] "$name" → image from top-level: $fallback');
+      return fallback;
+    }
+    debugPrint('⚠️  [HomeScreen] "$name" → NO image found. Keys: ${p.keys.toList()}');
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,7 +189,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
             physics: const AlwaysScrollableScrollPhysics(),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-              // ── Header ─────────────────────────────────
+              // ── Header ────────────────────────────────
               Container(
                 padding: const EdgeInsets.all(20), color: AppColors.primary,
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -153,10 +205,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                             fontWeight: FontWeight.bold, color: AppColors.white),
                       ),
                     ]),
-                    IconButton(
-                      icon: const Icon(Icons.notifications_outlined),
-                      color: AppColors.white, onPressed: () {},
-                    ),
+                 
                   ]),
                   const SizedBox(height: 20),
                   GestureDetector(
@@ -164,7 +213,8 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                       decoration: BoxDecoration(
-                          color: AppColors.white, borderRadius: BorderRadius.circular(12)),
+                          color: AppColors.white,
+                          borderRadius: BorderRadius.circular(12)),
                       child: const Row(children: [
                         Icon(Icons.search, color: AppColors.textHint),
                         SizedBox(width: 12),
@@ -177,7 +227,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                 ]),
               ),
 
-              // ── Quick search chips ──────────────────────
+              // ── Quick search chips ─────────────────────
               SizedBox(
                 height: 44,
                 child: ListView(
@@ -207,7 +257,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                 ),
               ),
 
-              // ── Categories ──────────────────────────────
+              // ── Categories ────────────────────────────
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
                 child: Row(
@@ -232,11 +282,9 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                     ? GridView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4, mainAxisSpacing: 12,
-                          crossAxisSpacing: 12, childAspectRatio: 0.85,
-                        ),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4, mainAxisSpacing: 12,
+                            crossAxisSpacing: 12, childAspectRatio: 0.85),
                         itemCount: 8,
                         itemBuilder: (_, __) => Container(
                           decoration: BoxDecoration(
@@ -249,11 +297,9 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                     : GridView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4, mainAxisSpacing: 12,
-                          crossAxisSpacing: 12, childAspectRatio: 0.85,
-                        ),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4, mainAxisSpacing: 12,
+                            crossAxisSpacing: 12, childAspectRatio: 0.85),
                         itemCount: _categories.length,
                         itemBuilder: (_, i) {
                           final cat = _categories[i];
@@ -267,7 +313,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                       ),
               ),
 
-              // ── Featured Products ───────────────────────
+              // ── Featured Products ─────────────────────
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
                 child: Row(
@@ -292,11 +338,9 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                   child: GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2, crossAxisSpacing: 12,
-                      mainAxisSpacing: 12, childAspectRatio: 0.72,
-                    ),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2, crossAxisSpacing: 12,
+                        mainAxisSpacing: 12, childAspectRatio: 0.72),
                     itemCount: 4,
                     itemBuilder: (_, __) => Container(
                       decoration: BoxDecoration(
@@ -313,11 +357,9 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                   child: GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2, crossAxisSpacing: 12,
-                      mainAxisSpacing: 12, childAspectRatio: 0.72,
-                    ),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2, crossAxisSpacing: 12,
+                        mainAxisSpacing: 12, childAspectRatio: 0.72),
                     itemCount: _featured.isEmpty ? 4 : _featured.length,
                     itemBuilder: (_, i) {
                       if (_featured.isNotEmpty) {
@@ -327,18 +369,13 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                           price:    _pPrice(p),
                           supplier: _pSupplier(p),
                           category: _pCategory(p),
-                          imageUrl: (p['imageUrl'] ?? p['image'])?.toString(),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ProductDetailScreen(
-                                product:    p,
-                                onViewCart: widget.onViewCart,
-                              ),
-                            ),
-                          ),
+                          imageUrl: _pImageUrl(p),
+                          onTap: () => Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => ProductDetailScreen(
+                              product: p, onViewCart: widget.onViewCart))),
                         );
                       }
+                      // Fallback static cards (no image)
                       const fb = [
                         {'name': 'Fresh Tomatoes', 'price': 3.50, 'supplier': 'Premium Wholesale', 'category': 'Fruit & Veg'},
                         {'name': 'Chicken Breast', 'price': 8.99, 'supplier': 'Fresh Meat Co.',    'category': 'Meat'},
@@ -348,7 +385,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
                       final f = fb[i];
                       return _ProductCard(
                         name:     f['name']     as String,
-                        price:    (f['price'] as num).toDouble(),
+                        price:    (f['price']   as num).toDouble(),
                         supplier: f['supplier'] as String,
                         category: f['category'] as String,
                       );
@@ -390,41 +427,53 @@ class _CategoryCard extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface, borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
+  Widget build(BuildContext context) {
+    final hasImage = imageUrl != null && imageUrl!.isNotEmpty;
+    if (hasImage) {
+      debugPrint('🖼️  [_CategoryCard] "$label" → using AuthImage: $imageUrl');
+    } else {
+      debugPrint('⚠️  [_CategoryCard] "$label" → no image, using icon');
+    }
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Expanded(flex: 3, child: Padding(
+            padding: const EdgeInsets.fromLTRB(6, 8, 6, 2),
+            child: hasImage
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: AuthImage(
+                      url: imageUrl!,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: double.infinity,
+                      placeholder: Center(
+                          child: Icon(_icon(), size: 26, color: AppColors.primary)),
+                      errorWidget: Center(
+                          child: Icon(_icon(), size: 26, color: AppColors.primary)),
+                    ),
+                  )
+                : Center(child: Icon(_icon(), size: 26, color: AppColors.primary)),
+          )),
+          Expanded(flex: 2, child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3),
+            child: Center(child: Text(label,
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary),
+                textAlign: TextAlign.center, maxLines: 2,
+                overflow: TextOverflow.ellipsis)),
+          )),
+        ]),
       ),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Expanded(flex: 3, child: Padding(
-          padding: const EdgeInsets.fromLTRB(6, 8, 6, 2),
-          child: imageUrl != null && imageUrl!.isNotEmpty
-              ? ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.network(
-                    imageUrl!, fit: BoxFit.cover, width: double.infinity,
-                    loadingBuilder: (_, child, prog) => prog == null
-                        ? child
-                        : Center(child: Icon(_icon(), size: 26, color: AppColors.primary)),
-                    errorBuilder: (_, __, ___) =>
-                        Center(child: Icon(_icon(), size: 26, color: AppColors.primary)),
-                  ),
-                )
-              : Center(child: Icon(_icon(), size: 26, color: AppColors.primary)),
-        )),
-        Expanded(flex: 2, child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 3),
-          child: Center(child: Text(label, style: const TextStyle(
-              fontSize: 10, fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary),
-              textAlign: TextAlign.center, maxLines: 2,
-              overflow: TextOverflow.ellipsis)),
-        )),
-      ]),
-    ),
-  );
+    );
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -457,58 +506,77 @@ class _ProductCard extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface, borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          height: 110,
-          decoration: const BoxDecoration(color: AppColors.surfaceLight,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-          alignment: Alignment.center,
-          child: imageUrl != null && imageUrl!.isNotEmpty
-              ? ClipRRect(
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(16)),
-                  child: Image.network(imageUrl!, fit: BoxFit.cover,
-                    width: double.infinity, height: double.infinity,
-                    errorBuilder: (_, __, ___) =>
-                        Icon(_icon(), size: 55, color: AppColors.primary)),
-                )
-              : Icon(_icon(), size: 55, color: AppColors.primary),
+  Widget build(BuildContext context) {
+    final hasImage = imageUrl != null && imageUrl!.isNotEmpty;
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border),
         ),
-        Expanded(child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(name, style: const TextStyle(fontSize: 13,
-                fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                maxLines: 2, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 4),
-            if (supplier.isNotEmpty)
-              Text(supplier, style: const TextStyle(
-                  fontSize: 11, color: AppColors.textSecondary),
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-            const Spacer(),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text('£${price.toStringAsFixed(2)}', style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.bold,
-                  color: AppColors.primary)),
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: onTap != null ? AppColors.primary : AppColors.border,
-                  borderRadius: BorderRadius.circular(8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // ── Image area ──────────────────────────────
+          SizedBox(
+            height: 110,
+            width: double.infinity,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+              child: hasImage
+                  ? AuthImage(
+                      url: imageUrl!,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: 110,
+                      placeholder: Container(
+                        color: AppColors.surfaceLight,
+                        child: Center(
+                            child: Icon(_icon(), size: 55, color: AppColors.primary)),
+                      ),
+                      errorWidget: Container(
+                        color: AppColors.surfaceLight,
+                        child: Center(
+                            child: Icon(_icon(), size: 55, color: AppColors.primary)),
+                      ),
+                    )
+                  : Container(
+                      color: AppColors.surfaceLight,
+                      child: Center(
+                          child: Icon(_icon(), size: 55, color: AppColors.primary)),
+                    ),
+            ),
+          ),
+          Expanded(child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name, style: const TextStyle(fontSize: 13,
+                  fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 4),
+              if (supplier.isNotEmpty)
+                Text(supplier, style: const TextStyle(fontSize: 11,
+                    color: AppColors.textSecondary),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+              const Spacer(),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('£${price.toStringAsFixed(2)}', style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.bold,
+                    color: AppColors.primary)),
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: onTap != null ? AppColors.primary : AppColors.border,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.add, color: AppColors.white, size: 16),
                 ),
-                child: const Icon(Icons.add, color: AppColors.white, size: 16),
-              ),
+              ]),
             ]),
-          ]),
-        )),
-      ]),
-    ),
-  );
+          )),
+        ]),
+      ),
+    );
+  }
 }
